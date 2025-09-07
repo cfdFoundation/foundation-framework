@@ -1,0 +1,269 @@
+version: '3.8'
+
+services:
+  # Nginx Load Balancer
+  nginx:
+    build: ./nginx
+    container_name: api_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - api-node-1
+      - api-node-2
+    networks:
+      - api-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Node.js API Instance 1
+  api-node-1:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: api_node_1
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - INSTANCE_NAME=node-1
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=api_framework
+      - DB_USER=api_user
+      - DB_PASSWORD=secure_password_123
+      - DB_POOL_MIN=2
+      - DB_POOL_MAX=10
+      - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379
+      - REDIS_PASSWORD=redis_password_123
+      - REDIS_KEY_PREFIX=api_v2
+      - JWT_SECRET=super-secure-jwt-secret-change-in-production-chat3
+      - ENCRYPTION_KEY=32-char-encryption-key-change-me!
+      - LOG_LEVEL=info
+      - LOG_TO_DATABASE=true
+      - LOG_TO_CONSOLE=true
+      - ENABLE_METRICS=true
+      - DEFAULT_RATE_LIMIT=1000/hour
+      - ALLOWED_ORIGINS=http://localhost,http://localhost:3000,http://localhost:8080
+    volumes:
+      - ./logs/node-1:/app/logs
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
+    networks:
+      - api-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Node.js API Instance 2
+  api-node-2:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: api_node_2
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - INSTANCE_NAME=node-2
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=api_framework
+      - DB_USER=api_user
+      - DB_PASSWORD=secure_password_123
+      - DB_POOL_MIN=2
+      - DB_POOL_MAX=10
+      - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379
+      - REDIS_PASSWORD=redis_password_123
+      - REDIS_KEY_PREFIX=api_v2
+      - JWT_SECRET=super-secure-jwt-secret-change-in-production-chat3
+      - ENCRYPTION_KEY=32-char-encryption-key-change-me!
+      - LOG_LEVEL=info
+      - LOG_TO_DATABASE=true
+      - LOG_TO_CONSOLE=true
+      - ENABLE_METRICS=true
+      - DEFAULT_RATE_LIMIT=1000/hour
+      - ALLOWED_ORIGINS=http://localhost,http://localhost:3000,http://localhost:8080
+    volumes:
+      - ./logs/node-2:/app/logs
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
+    networks:
+      - api-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: api_postgres
+    environment:
+      - POSTGRES_DB=api_framework
+      - POSTGRES_USER=api_user
+      - POSTGRES_PASSWORD=secure_password_123
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d
+      - ./sql/backups:/backups
+      - ./logs/postgres:/var/log/postgresql
+    ports:
+      - "5432:5432"  # Exposed for development access
+    networks:
+      - api-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U api_user -d api_framework"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    command: >
+      postgres 
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=4MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+      -c max_worker_processes=8
+      -c max_parallel_workers_per_gather=4
+      -c max_parallel_workers=8
+      -c max_parallel_maintenance_workers=4
+
+  # Redis Instance 1 (Master)
+  redis-1:
+    image: redis:7-alpine
+    container_name: api_redis_1
+    command: >
+      redis-server 
+      --requirepass redis_password_123
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    volumes:
+      - redis_1_data:/data
+      - ./logs/redis-1:/var/log/redis
+    ports:
+      - "6379:6379"  # Exposed for development access
+    networks:
+      - api-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Instance 2 (Slave/Replica)
+  redis-2:
+    image: redis:7-alpine
+    container_name: api_redis_2
+    command: >
+      redis-server 
+      --requirepass redis_password_123
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --replicaof redis-1 6379
+      --masterauth redis_password_123
+    volumes:
+      - redis_2_data:/data
+      - ./logs/redis-2:/var/log/redis
+    ports:
+      - "6380:6379"  # Exposed for development access
+    depends_on:
+      - redis-1
+    networks:
+      - api-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring and Management
+  adminer:
+    image: adminer:latest
+    container_name: api_adminer
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=postgres
+    depends_on:
+      - postgres
+    networks:
+      - api-network
+    restart: unless-stopped
+
+  # Redis Commander (Redis Management UI)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: api_redis_commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=redis-1:redis-1:6379:0:redis_password_123,redis-2:redis-2:6379:0:redis_password_123
+    depends_on:
+      - redis-1
+      - redis-2
+    networks:
+      - api-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_1_data:
+    driver: local
+  redis_2_data:
+    driver: local
+
+networks:
+  api-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
