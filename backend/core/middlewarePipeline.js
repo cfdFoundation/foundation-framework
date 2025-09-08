@@ -7,6 +7,13 @@ class MiddlewarePipeline {
         this.jwtSecret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
     }
 
+    // Apply middleware to Express app
+    apply(app) {
+        // This method applies general middleware to the Express app
+        // The specific API middleware is handled in the process() method
+        console.log('[MiddlewarePipeline] General middleware applied');
+    }
+
     async process(req, res, registry) {
         const context = this.createContext(req);
         

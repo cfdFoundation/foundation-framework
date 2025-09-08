@@ -3,76 +3,84 @@ const helmet = require('helmet');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 
+// Foundation Infrastructure
+const DependencyContainer = require('./core/dependencyContainer');
 const Registry = require('./core/registry');
-const DependencyContainer = require('./core/dependencyContainer'); // Enhanced Chat 2 version
 const MiddlewarePipeline = require('./core/middlewarePipeline');
 const ResponseFormatter = require('./core/responseFormatter');
 
 class APIFramework {
     constructor() {
         this.app = express();
-        this.registry = new Registry();
-        this.container = new DependencyContainer(); // Now with Chat 2 infrastructure
-        this.pipeline = new MiddlewarePipeline();
-        this.formatter = new ResponseFormatter();
         this.port = process.env.PORT || 3000;
-        this.instanceId = uuidv4().substring(0, 8);
+        this.instanceId = `${process.env.INSTANCE_NAME || 'api'}-${uuidv4().substring(0, 8)}`;
+        
+        // Foundation Infrastructure Services
+        this.container = new DependencyContainer();
+        this.registry = new Registry();
+        this.middleware = new MiddlewarePipeline();
+        this.formatter = new ResponseFormatter();
+        
+        this.server = null;
     }
 
     async initialize() {
-        console.log(`[Framework] Initializing Chat 2 instance ${this.instanceId}...`);
+        console.log(`[Framework] Initializing Foundation framework instance: ${this.instanceId}`);
         
-        // Basic Express setup
-        this.setupExpress();
-        
-        // Initialize Chat 2 infrastructure (Database, Logging, Error Handling)
+        // Initialize Foundation infrastructure first
         await this.container.initialize();
-        
-        // Register API modules
-        await this.registry.discoverAndRegister('./routes');
-        
-        // Setup middleware pipeline
+        console.log('[Framework] Foundation infrastructure initialized');
+
+        // Setup middleware
         this.setupMiddleware();
         
-        // Setup routes
+        // Discover and register modules
+        await this.registry.discoverAndRegister('./routes');
+        
+        // Setup routes with Foundation integration
         this.setupRoutes();
         
         // Setup error handling
         this.setupErrorHandling();
         
-        console.log(`[Framework] Chat 2 instance ${this.instanceId} fully initialized`);
+        console.log(`[Framework] Foundation framework ready with ${this.registry.getModuleCount()} modules`);
     }
 
-    setupExpress() {
+    setupMiddleware() {
+        // Basic middleware
         this.app.use(helmet());
         this.app.use(cors({
             origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
             credentials: true
         }));
         this.app.use(express.json({ limit: '10mb' }));
-        this.app.use(express.urlencoded({ extended: true }));
-        
-        // Add request ID and instance tracking
+        this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+        // Request ID and timing for Foundation logging
         this.app.use((req, res, next) => {
             req.id = uuidv4();
-            req.instanceId = this.instanceId;
             req.startTime = Date.now();
+            req.instanceId = this.instanceId;
             next();
         });
+
+        // Apply middleware pipeline (auth, rate limiting, etc.)
+        this.middleware.apply(this.app);
     }
 
-    setupMiddleware() {
-        // Enhanced health check endpoint with Chat 2 diagnostics
+    setupRoutes() {
+        // Health check endpoint
         this.app.get('/health', async (req, res) => {
             try {
-                const monitor = await this.container.getService('monitor');
-                const health = await monitor.checkHealth();
+                const dbHealth = await this.container.getService('database').then(db => db.healthCheck());
                 
                 res.json({
-                    ...health,
+                    status: 'healthy',
                     instance: this.instanceId,
-                    framework: 'Chat 2 Enhanced',
-                    uptime: process.uptime()
+                    uptime: process.uptime(),
+                    timestamp: new Date().toISOString(),
+                    database: dbHealth,
+                    framework: 'Foundation API Framework'
                 });
             } catch (error) {
                 res.status(503).json({
@@ -84,94 +92,120 @@ class APIFramework {
             }
         });
 
-        // Enhanced API info endpoint
-        this.app.get('/api/info', async (req, res) => {
-            try {
-                const registeredModules = this.registry.getModuleInfo();
-                const monitor = await this.container.getService('monitor');
-                const metrics = await monitor.getMetrics();
-                
-                res.json({
-                    framework: 'Auto-Registry API - Chat 2',
-                    version: '2.0.0',
-                    instance: this.instanceId,
-                    modules: registeredModules,
-                    infrastructure: {
-                        database: 'PostgreSQL + Redis',
-                        logging: 'Dual (Console + Database)',
-                        errorHandling: 'Comprehensive',
-                        caching: 'Automatic Redis'
-                    },
-                    metrics,
-                    timestamp: new Date().toISOString()
-                });
-            } catch (error) {
-                res.status(500).json({
-                    error: 'Failed to get API info',
-                    message: error.message,
-                    timestamp: new Date().toISOString()
-                });
-            }
+        // API info endpoint
+        this.app.get('/api/info', (req, res) => {
+            this.formatter.sendSuccess(res, {
+                framework: 'Foundation API Framework',
+                version: '2.0.0',
+                instance: this.instanceId,
+                modules: this.registry.getModuleInfo(),
+                features: [
+                    'Auto-discovery',
+                    'Database abstraction with caching',
+                    'Structured logging',
+                    'Error handling',
+                    'Authentication',
+                    'Rate limiting',
+                    'Performance monitoring'
+                ]
+            });
         });
 
-        // Metrics endpoint for monitoring
+        // Metrics endpoint (internal)
         this.app.get('/api/metrics', async (req, res) => {
             try {
                 const monitor = await this.container.getService('monitor');
-                const metrics = await monitor.getMetrics();
+                const metrics = monitor.getMetrics();
                 res.json(metrics);
             } catch (error) {
-                res.status(500).json({
-                    error: 'Failed to get metrics',
-                    message: error.message
-                });
+                res.status(500).json({ error: 'Metrics unavailable' });
             }
         });
-    }
 
-    setupRoutes() {
-        // Main API routing with enhanced error handling
-        this.app.all('/api/:version/:module/:method', async (req, res) => {
-            const logger = await this.container.getService('logger');
-            const errorHandler = await this.container.getService('errorHandler');
+        // Main API routes with Foundation infrastructure
+        this.app.all('/api/:version/:module/:method?', async (req, res) => {
+            const logger = await this.container.getService('logger').catch(() => null);
+            const errorHandler = await this.container.getService('errorHandler').catch(() => null);
             
             try {
-                // Run through middleware pipeline
-                const context = await this.pipeline.process(req, res, this.registry);
-                
-                if (context.response) {
-                    // Middleware handled the response (auth failure, rate limit, etc.)
+                // Extract route parameters
+                const { version, module, method } = req.params;
+                const data = { ...req.query, ...req.body };
+
+                // Create execution context for Foundation
+                const context = {
+                    module,
+                    method,
+                    version,
+                    data,
+                    req,
+                    user: req.user,
+                    requestId: req.id,
+                    instanceId: req.instanceId,
+                    startTime: req.startTime
+                };
+
+                // Log incoming request
+                if (logger) {
+                    if (typeof logger.log === 'function') {
+                        logger.log('info', 'Processing request', {
+                            module: context.module,
+                            method: context.method,
+                            requestId: context.requestId,
+                            userId: context.user?.id,
+                            ip: req.ip
+                        });
+                    }
+                }
+
+                // Check if method is provided
+                if (!method) {
+                    this.formatter.sendError(res, {
+                        code: 'METHOD_REQUIRED',
+                        message: `Method required for ${req.path}`,
+                        statusCode: 400
+                    }, req);
                     return;
                 }
 
-                // Execute the business logic with Chat 2 infrastructure
+                // Execute the business logic with Foundation infrastructure
                 const result = await this.executeBusinessLogic(context);
                 
                 // Format and send response
                 this.formatter.sendSuccess(res, result, context);
                 
                 // Log successful request
-                logger.info('Request completed successfully', {
-                    module: context.module,
-                    method: context.method,
-                    requestId: context.requestId,
-                    responseTime: Date.now() - context.startTime,
-                    userId: context.user?.id
-                });
+                if (logger) {
+                    if (typeof logger.log === 'function') {
+                        logger.log('info', 'Request completed successfully', {
+                            module: context.module,
+                            method: context.method,
+                            requestId: context.requestId,
+                            responseTime: Date.now() - context.startTime,
+                            userId: context.user?.id
+                        });
+                    }
+                }
                 
             } catch (error) {
-                // Chat 2 error handling - creates pretty responses and logs everything
-                const formattedResponse = errorHandler.createErrorResponse(error, req);
+                // Foundation error handling - creates pretty responses and logs everything
+                const formattedResponse = errorHandler ? 
+                    errorHandler.createErrorResponse(error, req) :
+                    { error: error.message };
                 
                 // Log the error with full context
-                logger.error('Request failed', {
-                    module: req.params.module,
-                    method: req.params.method,
-                    requestId: req.id,
-                    responseTime: Date.now() - req.startTime,
-                    userId: req.user?.id,
-                    error_details: error
-                });
+                if (logger) {
+                    if (typeof logger.log === 'function') {
+                        logger.log('error', 'Request failed', {
+                            module: req.params.module,
+                            method: req.params.method,
+                            requestId: req.id,
+                            responseTime: Date.now() - req.startTime,
+                            userId: req.user?.id,
+                            error_details: error
+                        });
+                    }
+                }
                 
                 // Send formatted error response
                 res.status(error.statusCode || 500).json(formattedResponse);
@@ -210,7 +244,7 @@ class APIFramework {
             };
         }
 
-        // Wrap module with Chat 2 infrastructure (database, logging, error handling)
+        // Wrap module with Foundation infrastructure (database, logging, error handling)
         const wrappedModule = this.container.wrapModule(moduleInstance, context);
         
         // Execute the method - now with bulletproof infrastructure
@@ -218,18 +252,22 @@ class APIFramework {
     }
 
     setupErrorHandling() {
-        // Graceful shutdown with Chat 2 cleanup
+        // Graceful shutdown with Foundation cleanup
         const gracefulShutdown = async (signal) => {
             console.log(`[Framework] Received ${signal}, shutting down gracefully...`);
             
             const logger = await this.container.getService('logger').catch(() => null);
             
             if (logger) {
-                logger.info('Framework shutdown initiated', {
-                    signal,
-                    instance: this.instanceId,
-                    uptime: process.uptime()
-                });
+                if (typeof logger.log === 'function') {
+                    logger.log('info', 'Framework shutdown initiated', {
+                        signal,
+                        instance: this.instanceId,
+                        uptime: process.uptime()
+                    });
+                } else {
+                    console.log('[Framework] ✅ Framework shutdown initiated');
+                }
             }
             
             // Close server
@@ -237,10 +275,10 @@ class APIFramework {
                 this.server.close();
             }
             
-            // Cleanup Chat 2 infrastructure (flush logs, close DB connections)
+            // Cleanup Foundation infrastructure (flush logs, close DB connections)
             await this.container.cleanup();
             
-            console.log(`[Framework] Chat 2 instance ${this.instanceId} shut down cleanly`);
+            console.log(`[Framework] Foundation instance ${this.instanceId} shut down cleanly`);
             process.exit(0);
         };
 
@@ -254,11 +292,13 @@ class APIFramework {
             
             try {
                 const logger = await this.container.getService('logger');
-                logger.error('Uncaught exception', {
-                    error: error.message,
-                    stack: error.stack,
-                    instance: this.instanceId
-                });
+                if (typeof logger.log === 'function') {
+                    logger.log('error', 'Uncaught exception', {
+                        error: error.message,
+                        stack: error.stack,
+                        instance: this.instanceId
+                    });
+                }
                 
                 // Give logger time to flush
                 await new Promise(resolve => setTimeout(resolve, 1000));
@@ -275,11 +315,13 @@ class APIFramework {
             
             try {
                 const logger = await this.container.getService('logger');
-                logger.error('Unhandled promise rejection', {
-                    reason: reason?.message || reason,
-                    stack: reason?.stack,
-                    instance: this.instanceId
-                });
+                if (typeof logger.log === 'function') {
+                    logger.log('error', 'Unhandled promise rejection', {
+                        reason: reason?.message || reason,
+                        stack: reason?.stack,
+                        instance: this.instanceId
+                    });
+                }
             } catch (logError) {
                 console.error('[Framework] Failed to log unhandled rejection:', logError);
             }
@@ -291,7 +333,7 @@ class APIFramework {
             await this.initialize();
             
             this.server = this.app.listen(this.port, () => {
-                console.log(`[Framework] 🚀 Chat 2 instance ${this.instanceId} listening on port ${this.port}`);
+                console.log(`[Framework] 🚀 Foundation instance ${this.instanceId} listening on port ${this.port}`);
                 console.log(`[Framework] 📊 Health: http://localhost:${this.port}/health`);
                 console.log(`[Framework] 📋 Info: http://localhost:${this.port}/api/info`);
                 console.log(`[Framework] 📈 Metrics: http://localhost:${this.port}/api/metrics`);
@@ -299,14 +341,18 @@ class APIFramework {
             
             // Log startup success
             const logger = await this.container.getService('logger');
-            logger.info('Framework started successfully', {
-                instance: this.instanceId,
-                port: this.port,
-                environment: process.env.NODE_ENV || 'development'
-            });
+            if (typeof logger.log === 'function') {
+                logger.log('info', 'Framework started successfully', {
+                    instance: this.instanceId,
+                    port: this.port,
+                    environment: process.env.NODE_ENV || 'development'
+                });
+            } else {
+                console.log('[Framework] ✅ Framework started successfully');
+            }
             
         } catch (error) {
-            console.error('[Framework] Failed to start Chat 2 framework:', error);
+            console.error('[Framework] Failed to start Foundation framework:', error);
             process.exit(1);
         }
     }

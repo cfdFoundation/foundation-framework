@@ -10,8 +10,9 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies (including dev dependencies for build)
-RUN npm ci --only=production && npm cache clean --force
+# Install dependencies (use npm install instead of npm ci)
+# npm install works without lockfile, npm ci requires package-lock.json
+RUN npm install --only=production && npm cache clean --force
 
 # Production stage
 FROM node:18-alpine AS production

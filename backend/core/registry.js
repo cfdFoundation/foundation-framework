@@ -94,6 +94,11 @@ class Registry {
         return methods.length;
     }
 
+    // Get total count of registered modules
+    getModuleCount() {
+        return this.modules.size;
+    }
+
     logModuleMethods(routerName, moduleExports, config) {
         const methods = Object.keys(moduleExports).filter(key => 
             typeof moduleExports[key] === 'function' && !key.startsWith('_')
@@ -179,6 +184,77 @@ class Registry {
             public: methodConfig.public === true,
             ...methodConfig
         };
+    }
+
+    // Get all modules with their statistics
+    getModuleStats() {
+        const stats = {
+            totalModules: this.modules.size,
+            modules: []
+        };
+
+        for (const [moduleKey, config] of this.moduleConfigs) {
+            const module = this.modules.get(moduleKey);
+            const methods = Object.keys(module).filter(key => 
+                typeof module[key] === 'function' && !key.startsWith('_')
+            );
+
+            stats.modules.push({
+                key: moduleKey,
+                routerName: config.routerName,
+                version: config.version,
+                methodCount: methods.length,
+                authRequired: config.authRequired,
+                rateLimit: config.rateLimit
+            });
+        }
+
+        return stats;
+    }
+
+    // Check if a module exists
+    hasModule(routerName, version = 'v1') {
+        const moduleKey = `${routerName}:${version}`;
+        return this.modules.has(moduleKey);
+    }
+
+    // Get all available versions for a module
+    getModuleVersions(routerName) {
+        const versions = [];
+        for (const [moduleKey, config] of this.moduleConfigs) {
+            if (config.routerName === routerName) {
+                versions.push(config.version);
+            }
+        }
+        return versions;
+    }
+
+    // Get all module names
+    getModuleNames() {
+        const names = new Set();
+        for (const [, config] of this.moduleConfigs) {
+            names.add(config.routerName);
+        }
+        return Array.from(names);
+    }
+
+    // Reload a specific module (for development)
+    async reloadModule(routerName, version = 'v1') {
+        const moduleKey = `${routerName}:${version}`;
+        const config = this.moduleConfigs.get(moduleKey);
+        
+        if (!config || !config.filePath) {
+            throw new Error(`Module ${routerName}@${version} not found or no file path stored`);
+        }
+
+        console.log(`[Registry] Reloading module: ${routerName}@${version}`);
+        
+        // Remove from registry
+        this.modules.delete(moduleKey);
+        this.moduleConfigs.delete(moduleKey);
+        
+        // Re-register
+        await this.registerModule(config.filePath);
     }
 }
 

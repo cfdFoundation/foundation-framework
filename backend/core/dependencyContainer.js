@@ -264,135 +264,85 @@ class DependencyContainer {
                 };
                 
                 const config = { ...defaults, ...options };
+                let lastError;
                 
                 for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
                     try {
                         return await fn();
                     } catch (error) {
+                        lastError = error;
+                        
                         if (attempt === config.maxAttempts) {
-                            throw error;
+                            throw lastError;
                         }
                         
                         let delay = config.delayMs;
                         if (config.backoff === 'exponential') {
-                            delay = Math.min(config.delayMs * Math.pow(2, attempt - 1), config.maxDelay);
-                        } else if (config.backoff === 'linear') {
-                            delay = config.delayMs * attempt;
+                            delay = Math.min(delay * Math.pow(2, attempt - 1), config.maxDelay);
                         }
                         
-                        await new Promise(resolve => setTimeout(resolve, delay));
+                        await this.delay(delay);
                     }
                 }
+                
+                throw lastError;
             },
             
-            // Batch processing utilities
-            batchProcess: async (items, batchSize, processor) => {
-                const results = [];
+            // Enhanced validation
+            validateSchema: (data, schema) => {
+                const errors = [];
                 
-                for (let i = 0; i < items.length; i += batchSize) {
-                    const batch = items.slice(i, i + batchSize);
-                    const batchResults = await Promise.all(batch.map(processor));
-                    results.push(...batchResults);
-                }
-                
-                return results;
-            },
-            
-            // Performance utilities
-            measurePerformance: async (fn, label = 'operation') => {
-                const startTime = Date.now();
-                const startMemory = process.memoryUsage();
-                
-                try {
-                    const result = await fn();
-                    const endTime = Date.now();
-                    const endMemory = process.memoryUsage();
+                for (const [field, rules] of Object.entries(schema)) {
+                    const value = data[field];
                     
-                    return {
-                        result,
-                        performance: {
-                            executionTime: endTime - startTime,
-                            memoryUsage: {
-                                heapUsed: endMemory.heapUsed - startMemory.heapUsed,
-                                heapTotal: endMemory.heapTotal - startMemory.heapTotal,
-                                rss: endMemory.rss - startMemory.rss
-                            }
+                    if (rules.required && (value === undefined || value === null || value === '')) {
+                        errors.push(`${field} is required`);
+                        continue;
+                    }
+                    
+                    if (value !== undefined && value !== null) {
+                        if (rules.type && typeof value !== rules.type) {
+                            errors.push(`${field} must be of type ${rules.type}`);
                         }
-                    };
-                } catch (error) {
-                    const endTime = Date.now();
-                    throw {
-                        ...error,
-                        executionTime: endTime - startTime
-                    };
+                        
+                        if (rules.minLength && value.length < rules.minLength) {
+                            errors.push(`${field} must be at least ${rules.minLength} characters`);
+                        }
+                        
+                        if (rules.maxLength && value.length > rules.maxLength) {
+                            errors.push(`${field} must be no more than ${rules.maxLength} characters`);
+                        }
+                        
+                        if (rules.pattern && !rules.pattern.test(value)) {
+                            errors.push(`${field} format is invalid`);
+                        }
+                    }
                 }
+                
+                return {
+                    isValid: errors.length === 0,
+                    errors
+                };
             }
         };
     }
 
     // Create monitoring service
     createMonitoringService() {
+        const startTime = Date.now();
+        
         return {
-            // Health check aggregator
-            checkHealth: async () => {
-                const health = {
-                    status: 'healthy',
-                    timestamp: new Date().toISOString(),
-                    services: {}
-                };
-
-                try {
-                    // Check database health
-                    health.services.database = await this.databaseService.healthCheck();
-                } catch (error) {
-                    health.services.database = { status: 'unhealthy', error: error.message };
-                    health.status = 'degraded';
-                }
-
-                // Check memory usage
-                const memory = process.memoryUsage();
-                health.services.memory = {
-                    status: memory.heapUsed < 500 * 1024 * 1024 ? 'healthy' : 'warning', // 500MB threshold
-                    heapUsed: Math.round(memory.heapUsed / 1024 / 1024) + 'MB',
-                    heapTotal: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
-                    rss: Math.round(memory.rss / 1024 / 1024) + 'MB'
-                };
-
-                // Check uptime
-                health.services.uptime = {
-                    status: 'healthy',
-                    seconds: Math.floor(process.uptime()),
-                    human: this.formatUptime(process.uptime())
-                };
-
-                return health;
-            },
-
-            // Get system metrics
-            getMetrics: async () => {
-                const metrics = {
-                    timestamp: new Date().toISOString(),
-                    process: {
-                        pid: process.pid,
-                        uptime: process.uptime(),
-                        memory: process.memoryUsage(),
-                        cpu: process.cpuUsage()
-                    }
-                };
-
-                // Add database stats if available
-                if (this.databaseService) {
-                    metrics.database = this.databaseService.getStats();
-                }
-
-                // Add error stats if available
-                if (this.errorHandler) {
-                    metrics.errors = this.errorHandler.getErrorStats();
-                }
-
-                return metrics;
-            },
-
+            getMetrics: () => ({
+                uptime: process.uptime(),
+                memory: process.memoryUsage(),
+                cpu: process.cpuUsage(),
+                startTime,
+                instance: process.env.INSTANCE_NAME || 'unknown',
+                nodeVersion: process.version,
+                platform: process.platform,
+                arch: process.arch
+            }),
+            
             formatUptime: (seconds) => {
                 const days = Math.floor(seconds / 86400);
                 const hours = Math.floor((seconds % 86400) / 3600);
@@ -424,9 +374,13 @@ class DependencyContainer {
                 }
             }
 
-            // Test logging
+            // Test logging - use the correct method
             if (this.loggingService) {
-                this.loggingService.info('Health check: Logging service operational');
+                if (typeof this.loggingService.log === 'function') {
+                    this.loggingService.log('info', 'Health check: Logging service operational');
+                } else {
+                    console.log('[DependencyContainer] ✅ Logging service ready');
+                }
                 console.log('[DependencyContainer] ✅ Logging service healthy');
             }
 

@@ -27,7 +27,7 @@ services:
   # Node.js API Instance 1
   api-node-1:
     build: 
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     container_name: api_node_1
     environment:
@@ -75,7 +75,7 @@ services:
   # Node.js API Instance 2
   api-node-2:
     build: 
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     container_name: api_node_2
     environment:
@@ -264,6 +264,3 @@ volumes:
 networks:
   api-network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
