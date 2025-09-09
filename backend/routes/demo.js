@@ -1,5 +1,6 @@
-// Enhanced demo module showcasing Chat 2 infrastructure
-// Now with real database operations, enhanced logging, and bulletproof error handling
+// backend/routes/demo.js
+// Enhanced demo module showcasing role-based access control
+// Now with role-based permissions and user context examples
 
 const _moduleConfig = {
     routerName: 'demo',
@@ -7,10 +8,17 @@ const _moduleConfig = {
     authRequired: false,
     rateLimit: '100/hour',
     methods: {
+        // Public endpoints
         getPublicData: { 
             public: true,
             rateLimit: '200/hour'
         },
+        getPublicStats: { 
+            public: true,
+            rateLimit: '50/hour'
+        },
+        
+        // User endpoints (authenticated)
         getPrivateData: { 
             authRequired: true,
             rateLimit: '50/hour'
@@ -27,17 +35,56 @@ const _moduleConfig = {
             authRequired: true,
             rateLimit: '10/hour'
         },
-        searchRecords: {
+        getUserRecords: {
             authRequired: true,
             rateLimit: '100/hour'
         },
-        getRecordStats: {
-            public: true,
+        
+        // Manager endpoints
+        getManagerData: {
+            authRequired: true,
+            roles: ['manager', 'admin'],
+            rateLimit: '100/hour'
+        },
+        approveRecord: {
+            authRequired: true,
+            roles: ['manager', 'admin'],
             rateLimit: '50/hour'
         },
-        batchCreateRecords: {
+        bulkUpdate: {
             authRequired: true,
-            rateLimit: '5/hour'
+            roles: ['manager', 'admin'],
+            rateLimit: '20/hour'
+        },
+        
+        // Admin endpoints
+        getAllRecords: {
+            authRequired: true,
+            roles: ['admin'],
+            rateLimit: '100/hour'
+        },
+        getSystemStats: {
+            authRequired: true,
+            roles: ['admin'],
+            rateLimit: '50/hour'
+        },
+        adminDeleteRecord: {
+            authRequired: true,
+            roles: ['admin'],
+            rateLimit: '20/hour'
+        },
+        
+        // Support endpoints
+        getSupportData: {
+            authRequired: true,
+            roles: ['support', 'admin'],
+            rateLimit: '200/hour'
+        },
+        
+        // Health check
+        health: { 
+            public: true,
+            rateLimit: '100/hour'
         }
     }
 };
@@ -54,10 +101,13 @@ async function initializeDemoTable() {
                 tags JSONB DEFAULT '[]',
                 metadata JSONB DEFAULT '{}',
                 status VARCHAR(50) DEFAULT 'active',
+                approved BOOLEAN DEFAULT false,
+                approval_date TIMESTAMPTZ,
+                approved_by UUID,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
-                created_by VARCHAR(100),
-                updated_by VARCHAR(100),
+                created_by UUID,
+                updated_by UUID,
                 version INTEGER DEFAULT 1
             );
         `;
@@ -70,6 +120,7 @@ async function initializeDemoTable() {
             'CREATE INDEX IF NOT EXISTS idx_demo_records_category ON demo_records(category);',
             'CREATE INDEX IF NOT EXISTS idx_demo_records_status ON demo_records(status);',
             'CREATE INDEX IF NOT EXISTS idx_demo_records_created_by ON demo_records(created_by);',
+            'CREATE INDEX IF NOT EXISTS idx_demo_records_approved ON demo_records(approved);',
             'CREATE INDEX IF NOT EXISTS idx_demo_records_created_at ON demo_records(created_at DESC);'
         ];
 
@@ -89,20 +140,17 @@ async function initializeDemoTable() {
 async function getPublicData(req, data) {
     this.log('Fetching public demo data');
 
-    // Initialize table if this is the first call
     await initializeDemoTable.call(this);
 
-    // Get filter parameters
     const limit = this.util.parseInteger(data.limit, 10);
     const offset = this.util.parseInteger(data.offset, 0);
     const category = this.util.sanitizeString(data.category);
     const status = this.util.sanitizeString(data.status || 'active');
 
-    // Build dynamic query
     let sql = `
-        SELECT id, name, description, category, tags, status, created_at, updated_at
+        SELECT id, name, description, category, tags, status, created_at, updated_at, approved
         FROM demo_records 
-        WHERE status = $1
+        WHERE status = $1 AND approved = true
     `;
     const params = [status];
     let paramIndex = 2;
@@ -116,17 +164,13 @@ async function getPublicData(req, data) {
     sql += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(limit, offset);
 
-    // Create cache key based on parameters
     const cacheKey = `public_data:${status}:${category || 'all'}:${limit}:${offset}`;
-
-    // Query with caching (5 minute cache)
     const result = await this.db.query(sql, params, cacheKey, 300);
 
-    // Get total count for pagination (with caching)
     const countSQL = `
         SELECT COUNT(*) as total 
         FROM demo_records 
-        WHERE status = $1 ${category ? 'AND category = $2' : ''}
+        WHERE status = $1 AND approved = true ${category ? 'AND category = $2' : ''}
     `;
     const countParams = category ? [status, category] : [status];
     const countCacheKey = `public_data_count:${status}:${category || 'all'}`;
@@ -150,7 +194,38 @@ async function getPublicData(req, data) {
     };
 }
 
-// Private endpoint - showcase authentication and user context
+// Public statistics
+async function getPublicStats(req, data) {
+    this.log('Fetching public statistics');
+
+    await initializeDemoTable.call(this);
+
+    const sql = `
+        SELECT 
+            COUNT(*) as total_records,
+            COUNT(*) FILTER (WHERE approved = true) as approved_records,
+            COUNT(DISTINCT category) as categories,
+            MAX(created_at) as latest_record
+        FROM demo_records 
+        WHERE status = 'active'
+    `;
+
+    const result = await this.db.query(sql, [], 'public_stats', 300);
+    const stats = result.rows[0];
+
+    return {
+        stats: {
+            total_records: parseInt(stats.total_records),
+            approved_records: parseInt(stats.approved_records),
+            categories: parseInt(stats.categories),
+            latest_record: stats.latest_record
+        },
+        fromCache: result.fromCache,
+        generated_at: this.util.getCurrentTimestamp()
+    };
+}
+
+// Private endpoint - showcase user context
 async function getPrivateData(req, data) {
     this.log(`Fetching private data for user ${this.context.user.id}`);
 
@@ -158,10 +233,9 @@ async function getPrivateData(req, data) {
 
     const userId = this.context.user.id;
 
-    // Get user's records with enhanced filtering
     const sql = `
         SELECT 
-            id, name, description, category, tags, metadata, status,
+            id, name, description, category, tags, metadata, status, approved,
             created_at, updated_at, version
         FROM demo_records 
         WHERE created_by = $1 
@@ -172,15 +246,15 @@ async function getPrivateData(req, data) {
     const cacheKey = `private_data:${userId}`;
     const result = await this.db.query(sql, [userId], cacheKey, 300);
 
-    // Get user's statistics
     const statsSQL = `
         SELECT 
             status,
+            approved,
             COUNT(*) as count,
             MAX(updated_at) as last_updated
         FROM demo_records 
         WHERE created_by = $1 
-        GROUP BY status
+        GROUP BY status, approved
     `;
 
     const statsResult = await this.db.query(statsSQL, [userId], `user_stats:${userId}`, 600);
@@ -192,20 +266,20 @@ async function getPrivateData(req, data) {
         statistics: statsResult.rows,
         user: {
             id: this.context.user.id,
-            name: this.context.user.name || 'Unknown'
+            username: this.context.username,
+            roles: this.context.getUserRoles()
         },
         fromCache: result.fromCache,
         requestId: this.context.requestId
     };
 }
 
-// Create operation with validation and optimistic locking
+// Create operation with user context
 async function createRecord(req, data) {
     this.log('Creating new demo record');
 
     await initializeDemoTable.call(this);
 
-    // Enhanced validation
     this.util.validate(data, {
         name: { 
             required: true, 
@@ -227,21 +301,20 @@ async function createRecord(req, data) {
     const tags = Array.isArray(data.tags) ? data.tags : [];
     const metadata = typeof data.metadata === 'object' ? data.metadata : {};
 
-    // Check for duplicate names in same category
+    // Check for duplicate names in same category for this user
     const duplicateCheck = await this.db.query(
-        'SELECT id FROM demo_records WHERE name = $1 AND category = $2 AND status = $3',
-        [name, category, 'active']
+        'SELECT id FROM demo_records WHERE name = $1 AND category = $2 AND created_by = $3 AND status = $4',
+        [name, category, this.context.user.id, 'active']
     );
 
     if (duplicateCheck.rows.length > 0) {
         throw {
             code: 'DUPLICATE_RECORD',
-            message: `Record with name '${name}' already exists in category '${category}'`,
+            message: `You already have a record with name '${name}' in category '${category}'`,
             statusCode: 409
         };
     }
 
-    // Create the record
     const recordData = {
         name,
         description,
@@ -249,6 +322,7 @@ async function createRecord(req, data) {
         tags: JSON.stringify(tags),
         metadata: JSON.stringify(metadata),
         status: 'active',
+        approved: false, // Requires approval
         created_by: this.context.user.id,
         updated_by: this.context.user.id
     };
@@ -260,7 +334,7 @@ async function createRecord(req, data) {
     await this.cache.invalidate(`private_data:${this.context.user.id}`);
     await this.cache.invalidate(`user_stats:${this.context.user.id}`);
 
-    this.log(`Created record ${result.id} in category ${category}`);
+    this.log(`Created record ${result.id} in category ${category} by user ${this.context.username}`);
 
     return {
         id: result.id,
@@ -270,19 +344,20 @@ async function createRecord(req, data) {
         tags: JSON.parse(result.tags || '[]'),
         metadata: JSON.parse(result.metadata || '{}'),
         status: result.status,
+        approved: result.approved,
         createdAt: result.created_at,
         createdBy: result.created_by,
-        version: result.version
+        version: result.version,
+        message: 'Record created successfully. Pending approval.'
     };
 }
 
-// Update with optimistic locking and change tracking
+// Update with ownership checking
 async function updateRecord(req, data) {
     this.log(`Updating record ${data.id}`);
 
     await initializeDemoTable.call(this);
 
-    // Validation
     this.util.validate(data, {
         id: { required: true },
         version: { required: true, type: 'number' }
@@ -291,7 +366,6 @@ async function updateRecord(req, data) {
     const id = this.util.sanitizeString(data.id);
     const expectedVersion = this.util.parseInteger(data.version);
 
-    // Get current record for optimistic locking
     const current = await this.db.findById('demo_records', id);
     
     if (!current) {
@@ -302,29 +376,23 @@ async function updateRecord(req, data) {
         };
     }
 
-    // Check ownership or admin permissions
-    if (current.created_by !== this.context.user.id && !this.context.hasRole?.('admin')) {
-        throw {
-            code: 'INSUFFICIENT_PERMISSIONS',
-            message: 'You can only update your own records',
-            statusCode: 403
-        };
-    }
+    // Use context helper for ownership check
+    this.context.requireOwnership(current.created_by);
 
     // Optimistic locking check
     if (current.version !== expectedVersion) {
         throw {
             code: 'VERSION_CONFLICT',
-            message: `Record has been modified by another user. Expected version ${expectedVersion}, found ${current.version}`,
+            message: `Record has been modified. Expected version ${expectedVersion}, found ${current.version}`,
             statusCode: 409,
             currentVersion: current.version
         };
     }
 
-    // Build update data
     const updateData = {
         updated_by: this.context.user.id,
-        version: current.version + 1
+        version: current.version + 1,
+        approved: false // Reset approval on update
     };
 
     // Update allowed fields
@@ -350,19 +418,12 @@ async function updateRecord(req, data) {
         updateData.metadata = JSON.stringify(typeof data.metadata === 'object' ? data.metadata : {});
     }
 
-    if (data.status !== undefined) {
-        updateData.status = ['active', 'inactive', 'archived'].includes(data.status) ? data.status : 'active';
-    }
-
-    // Perform the update
     const result = await this.db.update('demo_records', id, updateData);
 
-    // Invalidate caches
     await this.cache.invalidate('public_data:*');
     await this.cache.invalidate(`private_data:${this.context.user.id}`);
-    await this.cache.invalidate(`record:${id}`);
 
-    this.log(`Updated record ${id} to version ${result.version}`);
+    this.log(`Updated record ${id} to version ${result.version} by user ${this.context.username}`);
 
     return {
         id: result.id,
@@ -372,20 +433,21 @@ async function updateRecord(req, data) {
         tags: JSON.parse(result.tags || '[]'),
         metadata: JSON.parse(result.metadata || '{}'),
         status: result.status,
+        approved: result.approved,
         updatedAt: result.updated_at,
         updatedBy: result.updated_by,
-        version: result.version
+        version: result.version,
+        message: 'Record updated successfully. Pending re-approval.'
     };
 }
 
-// Enhanced delete with soft deletion
+// Delete with ownership check
 async function deleteRecord(req, data) {
     this.log(`Deleting record ${data.id}`);
 
     await initializeDemoTable.call(this);
 
     const id = this.util.sanitizeString(data.id);
-    const softDelete = data.soft !== false; // Default to soft delete
 
     if (!id) {
         throw {
@@ -395,7 +457,6 @@ async function deleteRecord(req, data) {
         };
     }
 
-    // Get current record
     const record = await this.db.findById('demo_records', id);
     
     if (!record) {
@@ -406,386 +467,330 @@ async function deleteRecord(req, data) {
         };
     }
 
-    // Check ownership
-    if (record.created_by !== this.context.user.id && !this.context.hasRole?.('admin')) {
-        throw {
-            code: 'INSUFFICIENT_PERMISSIONS',
-            message: 'You can only delete your own records',
-            statusCode: 403
-        };
-    }
+    // Check ownership or admin access
+    this.context.requireOwnership(record.created_by);
 
-    let result;
+    // Soft delete
+    const result = await this.db.update('demo_records', id, {
+        status: 'deleted',
+        updated_by: this.context.user.id,
+        version: record.version + 1
+    });
 
-    if (softDelete) {
-        // Soft delete - just update status
-        result = await this.db.update('demo_records', id, {
-            status: 'deleted',
-            updated_by: this.context.user.id,
-            version: record.version + 1
-        });
-        
-        this.log(`Soft deleted record ${id}`);
-    } else {
-        // Hard delete - actually remove from database
-        result = await this.db.delete('demo_records', id);
-        
-        this.log(`Hard deleted record ${id}`);
-    }
-
-    // Invalidate caches
     await this.cache.invalidate('public_data:*');
     await this.cache.invalidate(`private_data:${this.context.user.id}`);
-    await this.cache.invalidate(`record:${id}`);
+
+    this.log(`Soft deleted record ${id} by user ${this.context.username}`);
 
     return {
         id,
         deleted: true,
-        method: softDelete ? 'soft' : 'hard',
         deletedAt: this.util.getCurrentTimestamp(),
-        deletedBy: this.context.user.id
+        deletedBy: this.context.user.id,
+        message: 'Record deleted successfully'
     };
 }
 
-// Advanced search with full-text search
-async function searchRecords(req, data) {
-    this.log('Performing record search');
+// Get user's own records
+async function getUserRecords(req, data) {
+    this.log('Fetching user records with filters');
 
     await initializeDemoTable.call(this);
 
-    const query = this.util.sanitizeString(data.query || '');
-    const category = this.util.sanitizeString(data.category);
+    const userId = this.context.user.id;
     const status = this.util.sanitizeString(data.status || 'active');
-    const limit = Math.min(this.util.parseInteger(data.limit, 20), 100); // Max 100 results
+    const approved = data.approved; // can be true, false, or undefined
+    const limit = Math.min(this.util.parseInteger(data.limit, 20), 100);
     const offset = this.util.parseInteger(data.offset, 0);
 
-    if (!query && !category) {
-        throw {
-            code: 'VALIDATION_ERROR',
-            message: 'Search query or category filter is required',
-            statusCode: 400
-        };
-    }
-
-    let sql, params, cacheKey;
-
-    if (query) {
-        // Full-text search
-        sql = `
-            SELECT 
-                id, name, description, category, tags, status, 
-                created_at, updated_at,
-                ts_rank(to_tsvector('english', name || ' ' || COALESCE(description, '')), plainto_tsquery('english', $1)) as relevance
-            FROM demo_records 
-            WHERE status = $2 
-                AND to_tsvector('english', name || ' ' || COALESCE(description, '')) @@ plainto_tsquery('english', $1)
-                ${category ? 'AND category = $3' : ''}
-            ORDER BY relevance DESC, updated_at DESC 
-            LIMIT $${category ? 4 : 3} OFFSET $${category ? 5 : 4}
-        `;
-        
-        params = category ? [query, status, category, limit, offset] : [query, status, limit, offset];
-        cacheKey = `search:${query}:${status}:${category || 'all'}:${limit}:${offset}`;
-    } else {
-        // Category filter only
-        sql = `
-            SELECT id, name, description, category, tags, status, created_at, updated_at
-            FROM demo_records 
-            WHERE status = $1 AND category = $2
-            ORDER BY updated_at DESC 
-            LIMIT $3 OFFSET $4
-        `;
-        
-        params = [status, category, limit, offset];
-        cacheKey = `category_search:${category}:${status}:${limit}:${offset}`;
-    }
-
-    const result = await this.db.query(sql, params, cacheKey, 300);
-
-    // Get total count
-    const countSQL = query ? `
-        SELECT COUNT(*) as total
+    let sql = `
+        SELECT id, name, description, category, tags, status, approved, 
+               created_at, updated_at, version
         FROM demo_records 
-        WHERE status = $2 
-            AND to_tsvector('english', name || ' ' || COALESCE(description, '')) @@ plainto_tsquery('english', $1)
-            ${category ? 'AND category = $3' : ''}
-    ` : `
-        SELECT COUNT(*) as total
-        FROM demo_records 
-        WHERE status = $1 AND category = $2
+        WHERE created_by = $1 AND status = $2
     `;
+    const params = [userId, status];
+    let paramIndex = 3;
 
-    const countParams = query ? 
-        (category ? [query, status, category] : [query, status]) :
-        [status, category];
+    if (approved !== undefined) {
+        sql += ` AND approved = $${paramIndex}`;
+        params.push(approved);
+        paramIndex++;
+    }
 
-    const countResult = await this.db.query(countSQL, countParams, `${cacheKey}:count`, 300);
-    const total = parseInt(countResult.rows[0]?.total || 0);
+    sql += ` ORDER BY updated_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(limit, offset);
 
-    this.log(`Search returned ${result.rows.length} results for query: "${query}"`);
+    const result = await this.db.query(sql, params);
 
     return {
-        query,
-        results: result.rows.map(row => ({
-            ...row,
-            tags: JSON.parse(row.tags || '[]'),
-            relevance: row.relevance || null
+        records: result.rows.map(record => ({
+            ...record,
+            tags: JSON.parse(record.tags || '[]')
         })),
         pagination: {
             limit,
             offset,
-            total,
-            hasMore: offset + limit < total
+            hasMore: result.rows.length === limit
+        },
+        user: {
+            id: userId,
+            username: this.context.username
+        }
+    };
+}
+
+// Manager-only endpoint
+async function getManagerData(req, data) {
+    this.log('Fetching manager data');
+
+    // Role is already checked by middleware, but we can double-check
+    this.context.requireRole('manager');
+
+    await initializeDemoTable.call(this);
+
+    const sql = `
+        SELECT 
+            dr.id, dr.name, dr.description, dr.category, dr.status, dr.approved,
+            dr.created_at, dr.updated_at, dr.created_by,
+            fu.username as creator_username, fu.first_name, fu.last_name
+        FROM demo_records dr
+        LEFT JOIN framework_users fu ON dr.created_by = fu.id
+        WHERE dr.status = 'active' AND dr.approved = false
+        ORDER BY dr.created_at DESC
+        LIMIT 50
+    `;
+
+    const result = await this.db.query(sql, [], 'pending_approval', 300);
+
+    this.log(`Manager ${this.context.username} retrieved ${result.rows.length} pending records`);
+
+    return {
+        pendingRecords: result.rows,
+        manager: {
+            id: this.context.user.id,
+            username: this.context.username,
+            roles: this.context.getUserRoles()
         },
         fromCache: result.fromCache
     };
 }
 
-// Statistics endpoint with complex aggregations
-async function getRecordStats(req, data) {
-    this.log('Generating record statistics');
+// Manager approval function
+async function approveRecord(req, data) {
+    this.log('Approving record');
 
-    await initializeDemoTable.call(this);
+    this.context.requireRole('manager');
 
-    const timeframe = data.timeframe || '30d'; // 7d, 30d, 90d, 1y
-    const groupBy = data.groupBy || 'category'; // category, status, day, week
-
-    // Calculate date range
-    const ranges = {
-        '7d': 7,
-        '30d': 30,
-        '90d': 90,
-        '1y': 365
-    };
-
-    const days = ranges[timeframe] || 30;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-
-    const cacheKey = `stats:${timeframe}:${groupBy}`;
-
-    let sql;
-    const params = [startDate.toISOString()];
-
-    switch (groupBy) {
-        case 'category':
-            sql = `
-                SELECT 
-                    category,
-                    COUNT(*) as count,
-                    COUNT(*) FILTER (WHERE status = 'active') as active_count,
-                    COUNT(*) FILTER (WHERE status = 'inactive') as inactive_count,
-                    AVG(CASE WHEN status = 'active' THEN 1 ELSE 0 END) * 100 as active_percentage
-                FROM demo_records 
-                WHERE created_at >= $1 
-                GROUP BY category 
-                ORDER BY count DESC
-            `;
-            break;
-
-        case 'status':
-            sql = `
-                SELECT 
-                    status,
-                    COUNT(*) as count,
-                    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) as percentage
-                FROM demo_records 
-                WHERE created_at >= $1 
-                GROUP BY status 
-                ORDER BY count DESC
-            `;
-            break;
-
-        case 'day':
-            sql = `
-                SELECT 
-                    DATE(created_at) as date,
-                    COUNT(*) as count,
-                    COUNT(DISTINCT created_by) as unique_creators
-                FROM demo_records 
-                WHERE created_at >= $1 
-                GROUP BY DATE(created_at) 
-                ORDER BY date DESC
-            `;
-            break;
-
-        case 'week':
-            sql = `
-                SELECT 
-                    DATE_TRUNC('week', created_at) as week_start,
-                    COUNT(*) as count,
-                    COUNT(DISTINCT created_by) as unique_creators
-                FROM demo_records 
-                WHERE created_at >= $1 
-                GROUP BY DATE_TRUNC('week', created_at) 
-                ORDER BY week_start DESC
-            `;
-            break;
-
-        default:
-            throw {
-                code: 'INVALID_GROUP_BY',
-                message: 'Invalid groupBy parameter. Use: category, status, day, or week',
-                statusCode: 400
-            };
-    }
-
-    const result = await this.db.query(sql, params, cacheKey, 600); // 10-minute cache
-
-    // Overall statistics
-    const overallSQL = `
-        SELECT 
-            COUNT(*) as total_records,
-            COUNT(DISTINCT category) as unique_categories,
-            COUNT(DISTINCT created_by) as unique_creators,
-            MIN(created_at) as oldest_record,
-            MAX(created_at) as newest_record
-        FROM demo_records 
-        WHERE created_at >= $1
-    `;
-
-    const overallResult = await this.db.query(overallSQL, params, `${cacheKey}:overall`, 600);
-
-    this.log(`Generated statistics for ${timeframe} timeframe grouped by ${groupBy}`);
-
-    return {
-        timeframe,
-        groupBy,
-        startDate: startDate.toISOString(),
-        endDate: new Date().toISOString(),
-        data: result.rows,
-        overall: overallResult.rows[0],
-        fromCache: result.fromCache,
-        generatedAt: this.util.getCurrentTimestamp()
-    };
-}
-
-// Batch operations with transaction support
-async function batchCreateRecords(req, data) {
-    this.log(`Starting batch creation of ${data.records?.length || 0} records`);
-
-    await initializeDemoTable.call(this);
-
-    // Validation
-    if (!Array.isArray(data.records) || data.records.length === 0) {
-        throw {
-            code: 'VALIDATION_ERROR',
-            message: 'Records array is required and must not be empty',
-            statusCode: 400
-        };
-    }
-
-    if (data.records.length > 100) {
-        throw {
-            code: 'BATCH_SIZE_EXCEEDED',
-            message: 'Batch size cannot exceed 100 records',
-            statusCode: 400
-        };
-    }
-
-    // Validate each record
-    const validatedRecords = [];
-    const errors = [];
-
-    for (let i = 0; i < data.records.length; i++) {
-        try {
-            const record = data.records[i];
-            this.util.validate(record, {
-                name: { required: true, minLength: 2, maxLength: 255 },
-                category: { required: true, pattern: /^[a-zA-Z0-9_-]+$/ }
-            });
-
-            validatedRecords.push({
-                name: this.util.sanitizeString(record.name),
-                description: this.util.sanitizeString(record.description),
-                category: this.util.sanitizeString(record.category),
-                tags: JSON.stringify(Array.isArray(record.tags) ? record.tags : []),
-                metadata: JSON.stringify(typeof record.metadata === 'object' ? record.metadata : {}),
-                status: 'active',
-                created_by: this.context.user.id,
-                updated_by: this.context.user.id
-            });
-        } catch (error) {
-            errors.push({ index: i, error: error.message });
-        }
-    }
-
-    if (errors.length > 0) {
-        throw {
-            code: 'BATCH_VALIDATION_ERROR',
-            message: 'Some records failed validation',
-            statusCode: 400,
-            validationErrors: errors
-        };
-    }
-
-    // Perform batch insert in transaction
-    const results = await this.db.transaction(async (tx) => {
-        const insertedRecords = [];
-
-        for (const recordData of validatedRecords) {
-            const sql = `
-                INSERT INTO demo_records (name, description, category, tags, metadata, status, created_by, updated_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                RETURNING *
-            `;
-
-            const values = [
-                recordData.name,
-                recordData.description,
-                recordData.category,
-                recordData.tags,
-                recordData.metadata,
-                recordData.status,
-                recordData.created_by,
-                recordData.updated_by
-            ];
-
-            const result = await tx.query(sql, values);
-            insertedRecords.push(result.rows[0]);
-        }
-
-        return insertedRecords;
+    this.util.validate(data, {
+        id: { required: true },
+        approved: { required: true, type: 'boolean' }
     });
 
-    // Invalidate caches
-    await this.cache.invalidate('public_data:*');
-    await this.cache.invalidate(`private_data:${this.context.user.id}`);
-    await this.cache.invalidate(`user_stats:${this.context.user.id}`);
+    const id = this.util.sanitizeString(data.id);
+    const approved = data.approved;
 
-    this.log(`Successfully created ${results.length} records in batch`);
+    const record = await this.db.findById('demo_records', id);
+    
+    if (!record) {
+        throw {
+            code: 'RECORD_NOT_FOUND',
+            message: 'Record not found',
+            statusCode: 404
+        };
+    }
+
+    const result = await this.db.update('demo_records', id, {
+        approved: approved,
+        approval_date: approved ? new Date() : null,
+        approved_by: approved ? this.context.user.id : null,
+        updated_by: this.context.user.id
+    });
+
+    await this.cache.invalidate('public_data:*');
+    await this.cache.invalidate('pending_approval');
+
+    const action = approved ? 'approved' : 'rejected';
+    this.log(`Record ${id} ${action} by manager ${this.context.username}`);
 
     return {
-        created: results.length,
-        records: results.map(record => ({
-            id: record.id,
-            name: record.name,
-            description: record.description,
-            category: record.category,
-            tags: JSON.parse(record.tags || '[]'),
-            metadata: JSON.parse(record.metadata || '{}'),
-            status: record.status,
-            createdAt: record.created_at,
-            createdBy: record.created_by,
-            version: record.version
-        })),
-        batchId: this.util.generateId(),
-        processedAt: this.util.getCurrentTimestamp()
+        id: result.id,
+        approved: result.approved,
+        approvalDate: result.approval_date,
+        approvedBy: result.approved_by,
+        message: `Record ${action} successfully`,
+        approver: {
+            id: this.context.user.id,
+            username: this.context.username
+        }
     };
 }
 
-// Health check for this specific module
+// Admin-only: Get all records
+async function getAllRecords(req, data) {
+    this.log('Admin fetching all records');
+
+    this.context.requireAdmin();
+
+    await initializeDemoTable.call(this);
+
+    const limit = Math.min(this.util.parseInteger(data.limit, 50), 200);
+    const offset = this.util.parseInteger(data.offset, 0);
+    const status = this.util.sanitizeString(data.status);
+
+    let sql = `
+        SELECT 
+            dr.*, 
+            fu.username as creator_username,
+            ap.username as approver_username
+        FROM demo_records dr
+        LEFT JOIN framework_users fu ON dr.created_by = fu.id
+        LEFT JOIN framework_users ap ON dr.approved_by = ap.id
+    `;
+    const params = [];
+    let paramIndex = 1;
+
+    if (status) {
+        sql += ` WHERE dr.status = $${paramIndex}`;
+        params.push(status);
+        paramIndex++;
+    }
+
+    sql += ` ORDER BY dr.updated_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(limit, offset);
+
+    const result = await this.db.query(sql, params);
+
+    this.log(`Admin ${this.context.username} retrieved ${result.rows.length} records`);
+
+    return {
+        records: result.rows.map(record => ({
+            ...record,
+            tags: JSON.parse(record.tags || '[]'),
+            metadata: JSON.parse(record.metadata || '{}')
+        })),
+        pagination: {
+            limit,
+            offset,
+            hasMore: result.rows.length === limit
+        },
+        admin: {
+            id: this.context.user.id,
+            username: this.context.username
+        }
+    };
+}
+
+// Admin system statistics
+async function getSystemStats(req, data) {
+    this.log('Generating system statistics');
+
+    this.context.requireAdmin();
+
+    await initializeDemoTable.call(this);
+
+    const sql = `
+        SELECT 
+            COUNT(*) as total_records,
+            COUNT(*) FILTER (WHERE status = 'active') as active_records,
+            COUNT(*) FILTER (WHERE approved = true) as approved_records,
+            COUNT(*) FILTER (WHERE approved = false AND status = 'active') as pending_records,
+            COUNT(*) FILTER (WHERE status = 'deleted') as deleted_records,
+            COUNT(DISTINCT created_by) as unique_creators,
+            COUNT(DISTINCT category) as categories,
+            MAX(created_at) as latest_record,
+            AVG(EXTRACT(EPOCH FROM (updated_at - created_at))) as avg_processing_time
+        FROM demo_records
+    `;
+
+    const result = await this.db.query(sql, [], 'admin_system_stats', 300);
+    const stats = result.rows[0];
+
+    // Get top categories
+    const categorySQL = `
+        SELECT category, COUNT(*) as count
+        FROM demo_records 
+        WHERE status = 'active'
+        GROUP BY category 
+        ORDER BY count DESC 
+        LIMIT 10
+    `;
+
+    const categoryResult = await this.db.query(categorySQL, [], 'admin_top_categories', 300);
+
+    this.log(`Admin ${this.context.username} generated system statistics`);
+
+    return {
+        overview: {
+            total_records: parseInt(stats.total_records),
+            active_records: parseInt(stats.active_records),
+            approved_records: parseInt(stats.approved_records),
+            pending_records: parseInt(stats.pending_records),
+            deleted_records: parseInt(stats.deleted_records),
+            unique_creators: parseInt(stats.unique_creators),
+            categories: parseInt(stats.categories),
+            latest_record: stats.latest_record,
+            avg_processing_time_seconds: parseFloat(stats.avg_processing_time || 0).toFixed(2)
+        },
+        topCategories: categoryResult.rows,
+        generatedBy: {
+            id: this.context.user.id,
+            username: this.context.username,
+            timestamp: this.util.getCurrentTimestamp()
+        },
+        fromCache: result.fromCache
+    };
+}
+
+// Support data access
+async function getSupportData(req, data) {
+    this.log('Support accessing user data');
+
+    this.context.requireRole('support');
+
+    const searchTerm = this.util.sanitizeString(data.search);
+    
+    if (!searchTerm || searchTerm.length < 3) {
+        throw {
+            code: 'INVALID_SEARCH',
+            message: 'Search term must be at least 3 characters',
+            statusCode: 400
+        };
+    }
+
+    const sql = `
+        SELECT 
+            dr.id, dr.name, dr.category, dr.status, dr.approved, dr.created_at,
+            fu.username, fu.email, fu.first_name, fu.last_name
+        FROM demo_records dr
+        JOIN framework_users fu ON dr.created_by = fu.id
+        WHERE dr.name ILIKE $1 OR fu.username ILIKE $1 OR fu.email ILIKE $1
+        ORDER BY dr.created_at DESC
+        LIMIT 20
+    `;
+
+    const result = await this.db.query(sql, [`%${searchTerm}%`]);
+
+    this.log(`Support ${this.context.username} searched for "${searchTerm}" - ${result.rows.length} results`);
+
+    return {
+        searchTerm,
+        results: result.rows,
+        support: {
+            id: this.context.user.id,
+            username: this.context.username,
+            searchTime: this.util.getCurrentTimestamp()
+        }
+    };
+}
+
+// Health check
 async function health(req, data) {
     try {
         await initializeDemoTable.call(this);
 
-        // Test database connectivity
         const testQuery = await this.db.query('SELECT COUNT(*) as count FROM demo_records', [], null, 0);
         
-        // Test cache connectivity
-        const cacheTest = await this.cache.set('health_test', { timestamp: Date.now() }, 10);
-        const cacheRetrieve = await this.cache.get('health_test');
-
         return {
             module: 'demo',
             status: 'healthy',
@@ -794,12 +799,13 @@ async function health(req, data) {
                 recordCount: parseInt(testQuery.rows[0]?.count || 0),
                 queryTime: testQuery.queryTime
             },
-            cache: {
-                connected: cacheTest && cacheRetrieve !== null,
-                testPassed: cacheRetrieve !== null
+            features: {
+                roleBasedAccess: true,
+                userContext: true,
+                approvalWorkflow: true
             },
             timestamp: this.util.getCurrentTimestamp(),
-            version: '2.0.0'
+            version: '3.0.0'
         };
     } catch (error) {
         return {
@@ -814,12 +820,16 @@ async function health(req, data) {
 module.exports = {
     _moduleConfig,
     getPublicData,
+    getPublicStats,
     getPrivateData,
     createRecord,
     updateRecord,
     deleteRecord,
-    searchRecords,
-    getRecordStats,
-    batchCreateRecords,
+    getUserRecords,
+    getManagerData,
+    approveRecord,
+    getAllRecords,
+    getSystemStats,
+    getSupportData,
     health
 };

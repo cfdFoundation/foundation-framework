@@ -1,3 +1,6 @@
+// backend/core/middlewarePipeline.js
+// Enhanced Middleware Pipeline with Role-Based Access Control
+
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 
@@ -9,8 +12,6 @@ class MiddlewarePipeline {
 
     // Apply middleware to Express app
     apply(app) {
-        // This method applies general middleware to the Express app
-        // The specific API middleware is handled in the process() method
         console.log('[MiddlewarePipeline] General middleware applied');
     }
 
@@ -23,7 +24,7 @@ class MiddlewarePipeline {
             
             // 2. Validate route exists
             if (!this.validateRoute(context, registry, res)) {
-                return { response: true }; // Response already sent
+                return { response: true };
             }
             
             // 3. Version validation
@@ -36,17 +37,22 @@ class MiddlewarePipeline {
                 return { response: true };
             }
             
-            // 5. Authentication
+            // 5. Authentication (enhanced with user context)
             if (!await this.authenticateRequest(context, req, res, registry)) {
                 return { response: true };
             }
             
-            // 6. Input validation
+            // 6. Role-based authorization (NEW)
+            if (!this.authorizeRequest(context, req, res, registry)) {
+                return { response: true };
+            }
+            
+            // 7. Input validation
             if (!this.validateInput(context, req, res)) {
                 return { response: true };
             }
             
-            // 7. Extract request data
+            // 8. Extract request data
             this.extractRequestData(context, req);
             
             return context;
@@ -77,7 +83,6 @@ class MiddlewarePipeline {
         context.module = module;
         context.method = method;
         
-        // Log the request
         console.log(`[${context.requestId}] ${req.method} /api/${version}/${module}/${method}`);
     }
 
@@ -94,7 +99,7 @@ class MiddlewarePipeline {
     }
 
     validateVersion(context, res) {
-        const supportedVersions = ['v1', 'v2']; // Expand as needed
+        const supportedVersions = ['v1', 'v2'];
         
         if (!supportedVersions.includes(context.version)) {
             this.sendError(res, {
@@ -111,7 +116,7 @@ class MiddlewarePipeline {
         const methodConfig = registry.getMethodConfig(context.module, context.method, context.version);
         
         if (!methodConfig?.rateLimit) {
-            return true; // No rate limiting configured
+            return true;
         }
 
         const rateLimitKey = `${context.module}:${context.method}:${context.version}`;
@@ -126,7 +131,6 @@ class MiddlewarePipeline {
         return new Promise((resolve) => {
             limiter(req, res, (err) => {
                 if (err) {
-                    // Rate limit exceeded - response already sent by express-rate-limit
                     resolve(false);
                 } else {
                     resolve(true);
@@ -136,9 +140,7 @@ class MiddlewarePipeline {
     }
 
     createRateLimiter(rateLimitConfig, key) {
-        // Parse rate limit string like "100/hour", "10/minute"
         const [limit, window] = rateLimitConfig.split('/');
-        
         const windowMs = this.parseTimeWindow(window);
         
         return rateLimit({
@@ -156,7 +158,6 @@ class MiddlewarePipeline {
             standardHeaders: true,
             legacyHeaders: false,
             keyGenerator: (req) => {
-                // Use IP + user ID if available for more precise limiting
                 return req.ip + (req.user?.id || '');
             }
         });
@@ -228,6 +229,45 @@ class MiddlewarePipeline {
         }
     }
 
+    // NEW: Role-based authorization
+    authorizeRequest(context, req, res, registry) {
+        const methodConfig = registry.getMethodConfig(context.module, context.method, context.version);
+        
+        // Skip authorization for public methods or methods without role requirements
+        if (methodConfig?.public === true || !methodConfig?.roles) {
+            return true;
+        }
+
+        // If user is not authenticated but roles are required
+        if (!context.user) {
+            this.sendError(res, {
+                code: 'AUTHENTICATION_REQUIRED',
+                message: 'Authentication required for this endpoint',
+                statusCode: 401
+            }, req);
+            return false;
+        }
+
+        const requiredRoles = Array.isArray(methodConfig.roles) ? methodConfig.roles : [methodConfig.roles];
+        const userRoles = Array.isArray(context.user.roles) ? context.user.roles : [];
+
+        // Check if user has any of the required roles
+        const hasRequiredRole = requiredRoles.some(role => userRoles.includes(role));
+
+        if (!hasRequiredRole) {
+            this.sendError(res, {
+                code: 'INSUFFICIENT_PERMISSIONS',
+                message: `Access denied. Required roles: ${requiredRoles.join(', ')}`,
+                statusCode: 403,
+                requiredRoles,
+                userRoles
+            }, req);
+            return false;
+        }
+
+        return true;
+    }
+
     validateInput(context, req, res) {
         // Basic input validation
         if (req.method === 'POST' || req.method === 'PUT') {
@@ -279,17 +319,53 @@ class MiddlewarePipeline {
             success: false,
             error: {
                 code: error.code || 'UNKNOWN_ERROR',
-                message: error.message || 'An unknown error occurred'
+                message: error.message || 'An unknown error occurred',
+                ...(error.requiredRoles && { requiredRoles: error.requiredRoles }),
+                ...(error.userRoles && { userRoles: error.userRoles })
             },
             requestId: req.id,
             timestamp: new Date().toISOString()
         });
     }
 
-    // Utility method to generate JWT tokens (for testing)
-    static generateToken(payload, expiresIn = '1h') {
+    // Enhanced utility method to generate JWT tokens
+    static generateToken(payload, expiresIn = '24h') {
         const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
         return jwt.sign(payload, secret, { expiresIn });
+    }
+
+    // Utility method to create test tokens for development
+    static createTestTokens() {
+        const tokens = {};
+
+        // Admin token
+        tokens.admin = this.generateToken({
+            id: 'admin-user-id',
+            email: 'admin@example.com',
+            username: 'admin',
+            roles: ['admin', 'user'],
+            permissions: ['read', 'write', 'delete', 'admin']
+        });
+
+        // Regular user token
+        tokens.user = this.generateToken({
+            id: 'regular-user-id',
+            email: 'user@example.com',
+            username: 'user',
+            roles: ['user'],
+            permissions: ['read', 'write']
+        });
+
+        // Manager token
+        tokens.manager = this.generateToken({
+            id: 'manager-user-id',
+            email: 'manager@example.com',
+            username: 'manager',
+            roles: ['manager', 'user'],
+            permissions: ['read', 'write', 'manage']
+        });
+
+        return tokens;
     }
 }
 

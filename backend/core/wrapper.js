@@ -1,3 +1,6 @@
+// backend/core/wrapper.js
+// Enhanced Module Wrapper with User Context and Role Utilities
+
 class ModuleWrapper {
     constructor(databaseService, loggingService, errorHandler) {
         this.db = databaseService;
@@ -63,8 +66,8 @@ class ModuleWrapper {
             // Inject utility functions
             util: this.createUtilityProxy(context),
             
-            // Inject context information
-            context: this.createContextProxy(context),
+            // Enhanced context with user management
+            context: this.createEnhancedContextProxy(context),
             
             // Inject cache operations
             cache: this.createCacheProxy(context)
@@ -303,7 +306,7 @@ class ModuleWrapper {
                 }
             },
             
-            // Validation helper
+            // Enhanced validation helper
             validate: (data, rules) => {
                 const errors = [];
                 
@@ -335,6 +338,14 @@ class ModuleWrapper {
                         if (rule.pattern && !rule.pattern.test(value)) {
                             errors.push(`${field} format is invalid`);
                         }
+
+                        if (rule.min && Number(value) < rule.min) {
+                            errors.push(`${field} must be at least ${rule.min}`);
+                        }
+
+                        if (rule.max && Number(value) > rule.max) {
+                            errors.push(`${field} must not exceed ${rule.max}`);
+                        }
                     }
                 }
                 
@@ -350,16 +361,19 @@ class ModuleWrapper {
         };
     }
 
-    createContextProxy(context) {
+    // Enhanced context with user management utilities
+    createEnhancedContextProxy(context) {
         return {
             // Request information
             requestId: context.requestId,
             instanceId: context.instanceId,
             startTime: context.startTime,
             
-            // User information
+            // User information (enhanced)
             user: context.user,
             userId: context.user?.id || null,
+            userEmail: context.user?.email || null,
+            username: context.user?.username || null,
             
             // Module information
             module: context.module,
@@ -372,10 +386,110 @@ class ModuleWrapper {
             method: context.req?.method,
             originalUrl: context.req?.originalUrl,
             
-            // Helper methods
+            // Authentication helpers
             isAuthenticated: () => !!context.user,
-            hasRole: (role) => context.user?.roles?.includes(role) || false,
-            hasPermission: (permission) => context.user?.permissions?.includes(permission) || false,
+            
+            // Enhanced role checking
+            hasRole: (role) => {
+                if (!context.user || !context.user.roles) return false;
+                const userRoles = Array.isArray(context.user.roles) ? context.user.roles : [context.user.roles];
+                return userRoles.includes(role);
+            },
+            
+            // Enhanced permission checking
+            hasPermission: (permission) => {
+                if (!context.user || !context.user.permissions) return false;
+                const userPermissions = Array.isArray(context.user.permissions) ? context.user.permissions : [context.user.permissions];
+                return userPermissions.includes(permission);
+            },
+            
+            // Check if user has any of the specified roles
+            hasAnyRole: (roles) => {
+                if (!context.user || !context.user.roles) return false;
+                const userRoles = Array.isArray(context.user.roles) ? context.user.roles : [context.user.roles];
+                const requiredRoles = Array.isArray(roles) ? roles : [roles];
+                return requiredRoles.some(role => userRoles.includes(role));
+            },
+            
+            // Check if user has all specified roles
+            hasAllRoles: (roles) => {
+                if (!context.user || !context.user.roles) return false;
+                const userRoles = Array.isArray(context.user.roles) ? context.user.roles : [context.user.roles];
+                const requiredRoles = Array.isArray(roles) ? roles : [roles];
+                return requiredRoles.every(role => userRoles.includes(role));
+            },
+            
+            // Check if user has any of the specified permissions
+            hasAnyPermission: (permissions) => {
+                if (!context.user || !context.user.permissions) return false;
+                const userPermissions = Array.isArray(context.user.permissions) ? context.user.permissions : [context.user.permissions];
+                const requiredPermissions = Array.isArray(permissions) ? permissions : [permissions];
+                return requiredPermissions.some(permission => userPermissions.includes(permission));
+            },
+            
+            // Check if user has all specified permissions
+            hasAllPermissions: (permissions) => {
+                if (!context.user || !context.user.permissions) return false;
+                const userPermissions = Array.isArray(context.user.permissions) ? context.user.permissions : [context.user.permissions];
+                const requiredPermissions = Array.isArray(permissions) ? permissions : [permissions];
+                return requiredPermissions.every(permission => userPermissions.includes(permission));
+            },
+            
+            // Admin helper
+            isAdmin: () => {
+                return context.user && context.user.roles && 
+                       (Array.isArray(context.user.roles) ? context.user.roles : [context.user.roles]).includes('admin');
+            },
+            
+            // Owner check helper (useful for checking if user owns a resource)
+            isOwner: (resourceUserId) => {
+                return context.user && context.user.id === resourceUserId;
+            },
+            
+            // Permission enforcement (throws error if not authorized)
+            requireRole: (role) => {
+                if (!this.hasRole(role)) {
+                    throw {
+                        code: 'INSUFFICIENT_PERMISSIONS',
+                        message: `Role '${role}' required`,
+                        statusCode: 403,
+                        requiredRole: role,
+                        userRoles: context.user?.roles || []
+                    };
+                }
+            },
+            
+            requirePermission: (permission) => {
+                if (!this.hasPermission(permission)) {
+                    throw {
+                        code: 'INSUFFICIENT_PERMISSIONS',
+                        message: `Permission '${permission}' required`,
+                        statusCode: 403,
+                        requiredPermission: permission,
+                        userPermissions: context.user?.permissions || []
+                    };
+                }
+            },
+            
+            requireAdmin: () => {
+                if (!this.isAdmin()) {
+                    throw {
+                        code: 'ADMIN_REQUIRED',
+                        message: 'Administrator access required',
+                        statusCode: 403
+                    };
+                }
+            },
+            
+            requireOwnership: (resourceUserId) => {
+                if (!this.isOwner(resourceUserId) && !this.isAdmin()) {
+                    throw {
+                        code: 'OWNERSHIP_REQUIRED',
+                        message: 'You can only access your own resources',
+                        statusCode: 403
+                    };
+                }
+            },
             
             // Timing
             getElapsedTime: () => Date.now() - context.startTime,
@@ -383,7 +497,14 @@ class ModuleWrapper {
             // Request data helpers
             getHeader: (name) => context.req?.get(name),
             getQueryParam: (name, defaultValue = null) => context.req?.query?.[name] || defaultValue,
-            getBodyParam: (name, defaultValue = null) => context.req?.body?.[name] || defaultValue
+            getBodyParam: (name, defaultValue = null) => context.req?.body?.[name] || defaultValue,
+            
+            // User context helpers
+            getUserRoles: () => context.user?.roles || [],
+            getUserPermissions: () => context.user?.permissions || [],
+            getUserId: () => context.user?.id || null,
+            getUserEmail: () => context.user?.email || null,
+            getUsername: () => context.user?.username || null
         };
     }
 
@@ -435,7 +556,8 @@ class ModuleWrapper {
                 ...details,
                 module: context.module,
                 method: context.method,
-                requestId: context.requestId
+                requestId: context.requestId,
+                userId: context.user?.id
             });
         }
     }
@@ -449,7 +571,8 @@ class ModuleWrapper {
             ...result,
             module: context.module,
             method: context.method,
-            requestId: context.requestId
+            requestId: context.requestId,
+            userId: context.user?.id
         });
     }
 
@@ -461,6 +584,7 @@ class ModuleWrapper {
             module: context.module,
             method: context.method,
             requestId: context.requestId,
+            userId: context.user?.id,
             error_details: this.errorHandler.sanitizeError ? this.errorHandler.sanitizeError(error) : error
         });
     }

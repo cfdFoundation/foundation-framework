@@ -1,5 +1,63 @@
--- Chat 3 Sample Data
--- Comprehensive sample data for demo and testing
+-- sql/init/02-sample-data.sql
+-- Sample Data with Built-in User Management
+-- Comprehensive sample data for demo and testing with default users
+
+-- Insert default users for the framework (password: password123 for all)
+INSERT INTO framework_users (
+    email, username, password_hash, first_name, last_name, phone, bio,
+    roles, permissions, status, email_verified, 
+    created_by, updated_by
+) VALUES
+(
+    'admin@example.com', 'admin', 
+    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
+    'System', 'Administrator', '+1234567890',
+    'System administrator with full access to all features and settings.',
+    '["admin", "user"]', 
+    '["read", "write", "delete", "admin", "manage_users", "manage_products"]',
+    'active', true,
+    'system', 'system'
+),
+(
+    'demo@example.com', 'demouser',
+    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
+    'Demo', 'User', '+1234567891',
+    'Demo user account for testing and demonstration purposes.',
+    '["user"]',
+    '["read", "write"]',
+    'active', true,
+    'system', 'system'
+),
+(
+    'manager@example.com', 'manager',
+    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
+    'Product', 'Manager', '+1234567892',
+    'Product manager responsible for catalog management and inventory.',
+    '["manager", "user"]',
+    '["read", "write", "manage_products", "manage_inventory"]',
+    'active', true,
+    'system', 'system'
+),
+(
+    'customer@example.com', 'customer',
+    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
+    'Regular', 'Customer', '+1234567893',
+    'Regular customer account for shopping and orders.',
+    '["user"]',
+    '["read"]',
+    'active', true,
+    'system', 'system'
+),
+(
+    'support@example.com', 'support',
+    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
+    'Customer', 'Support', '+1234567894',
+    'Customer support representative with limited administrative access.',
+    '["support", "user"]',
+    '["read", "write", "support"]',
+    'active', true,
+    'system', 'system'
+);
 
 -- Insert sample categories with hierarchy
 INSERT INTO product_categories (name, slug, description, image_url, sort_order, is_featured, created_by, updated_by) VALUES
@@ -141,24 +199,6 @@ BEGIN
         'system', 'system'
     ),
     
-    (
-        'EBOOK-DESIGN-001',
-        'UI/UX Design Principles (Digital)',
-        'ui-ux-design-principles-digital',
-        'Digital guide to user interface and user experience design. Learn design thinking, prototyping, user research, and modern design tools. Includes practical exercises and case studies.',
-        'Digital UI/UX design guide with practical exercises',
-        books_id,
-        'DesignPro',
-        29.99, 39.99, 5.00, 0, 0,
-        0.0, '{"format": "Digital Download"}',
-        '["design", "ui", "ux", "digital", "guide", "principles", "ebook"]',
-        '["ebook-design-1.jpg"]',
-        'active', false, 4.4, 78,
-        '{"format": "PDF + EPUB", "pages": 320, "language": "English", "download": "Instant", "compatibility": "All Devices", "updates": "Free Updates"}',
-        '{"content": {"chapters": 15, "case_studies": 12, "templates": 25}, "resources": {"figma_templates": true, "sketch_files": true, "video_walkthroughs": true}}',
-        'system', 'system'
-    ),
-    
     -- Home & Garden
     (
         'CHAIR-OFFICE-001',
@@ -178,24 +218,6 @@ BEGIN
         'system', 'system'
     ),
     
-    (
-        'LAMP-DESK-001',
-        'LED Desk Lamp with Wireless Charging',
-        'led-desk-lamp-wireless-charging',
-        'Modern LED desk lamp with built-in wireless charging pad. Features adjustable brightness, color temperature control, and USB charging port.',
-        'LED desk lamp with wireless charging and USB port',
-        home_id,
-        'LightTech',
-        89.99, 119.99, 45.00, 60, 10,
-        1.2, '{"height": "45cm", "base": "20cm", "arm": "adjustable"}',
-        '["lamp", "led", "desk", "wireless-charging", "adjustable", "modern"]',
-        '["lamp-desk-1.jpg", "lamp-desk-2.jpg"]',
-        'active', false, 4.1, 92,
-        '{"lighting": "LED", "brightness": "Dimmable", "color_temp": "3000K-6000K", "charging": "Qi Wireless + USB", "power": "12W", "controls": "Touch"}',
-        '{"led": {"lumens": 1200, "lifespan": "50000 hours", "efficiency": "100 lm/W"}, "charging": {"wireless": "10W Qi", "usb": "5V 2A"}, "materials": {"base": "Aluminum", "arm": "ABS Plastic"}}',
-        'system', 'system'
-    ),
-    
     -- Sports & Outdoors
     (
         'BIKE-MOUNTAIN-001',
@@ -212,24 +234,6 @@ BEGIN
         'active', true, 4.5, 134,
         '{"frame": "Aluminum", "gears": "21 Speed", "brakes": "Disc", "suspension": "Front", "wheel_size": "27.5 inch", "max_weight": "120kg"}',
         '{"frame": {"material": "6061 Aluminum", "geometry": "Trail", "sizes": ["M", "L", "XL"]}, "drivetrain": {"speeds": 21, "shifters": "Shimano", "cassette": "7-speed"}, "brakes": {"type": "Mechanical Disc", "rotor_size": "160mm"}}',
-        'system', 'system'
-    ),
-    
-    (
-        'TENT-CAMP-001',
-        'Waterproof Camping Tent 4-Person',
-        'waterproof-camping-tent-4-person',
-        '4-person waterproof camping tent perfect for family camping trips. Features easy setup, weather resistance, and spacious interior with vestibule.',
-        'Waterproof 4-person tent with easy setup',
-        sports_id,
-        'OutdoorGear',
-        159.99, 199.99, 85.00, 25, 5,
-        4.8, '{"packed": "60x20x20cm", "setup": "240x210x130cm"}',
-        '["tent", "camping", "waterproof", "4-person", "outdoor", "family", "hiking"]',
-        '["tent-camp-1.jpg", "tent-camp-2.jpg", "tent-camp-3.jpg"]',
-        'active', false, 4.2, 187,
-        '{"capacity": "4 Person", "seasons": "3 Season", "waterproof": "3000mm", "setup_time": "10 minutes", "weight": "4.8kg", "packed_size": "60x20x20cm"}',
-        '{"fabric": {"fly": "75D Polyester", "floor": "150D Oxford", "waterproof_rating": "3000mm"}, "poles": {"material": "Fiberglass", "shock_corded": true}, "features": ["Color-coded Setup", "Gear Loft", "Vestibule"]}',
         'system', 'system'
     ),
     
@@ -290,73 +294,26 @@ BEGIN
         'system', 'system'
     );
     
-END $;
-
--- Insert sample users with different roles
-INSERT INTO api_users (
-    email, username, password_hash, first_name, last_name, phone, bio,
-    roles, permissions, status, email_verified, 
-    created_by, updated_by
-) VALUES
-(
-    'admin@example.com', 'admin', 
-    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
-    'System', 'Administrator', '+1234567890',
-    'System administrator with full access to all features and settings.',
-    '["admin", "user"]', 
-    '["read", "write", "delete", "admin", "manage_users", "manage_products"]',
-    'active', true,
-    'system', 'system'
-),
-(
-    'demo@example.com', 'demouser',
-    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
-    'Demo', 'User', '+1234567891',
-    'Demo user account for testing and demonstration purposes.',
-    '["user"]',
-    '["read", "write"]',
-    'active', true,
-    'system', 'system'
-),
-(
-    'manager@example.com', 'manager',
-    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
-    'Product', 'Manager', '+1234567892',
-    'Product manager responsible for catalog management and inventory.',
-    '["manager", "user"]',
-    '["read", "write", "manage_products", "manage_inventory"]',
-    'active', true,
-    'system', 'system'
-),
-(
-    'customer@example.com', 'customer',
-    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewKuN7S6Y.xJw2CW', -- password123
-    'Regular', 'Customer', '+1234567893',
-    'Regular customer account for shopping and orders.',
-    '["user"]',
-    '["read"]',
-    'active', true,
-    'system', 'system'
-);
+END $$;
 
 -- Create some API keys for testing
-DO $
+DO $$
 DECLARE
     admin_user_id UUID;
     demo_user_id UUID;
 BEGIN
     -- Get user IDs
-    SELECT id INTO admin_user_id FROM api_users WHERE username = 'admin';
-    SELECT id INTO demo_user_id FROM api_users WHERE username = 'demouser';
+    SELECT id INTO admin_user_id FROM framework_users WHERE username = 'admin';
+    SELECT id INTO demo_user_id FROM framework_users WHERE username = 'demouser';
     
-    -- Insert API keys
-    INSERT INTO api_keys (
+    -- Insert API keys (these are example hashes - in production, use proper hashing)
+    INSERT INTO framework_api_keys (
         user_id, name, key_hash, key_prefix, permissions, rate_limit, quota_limit,
         expires_at, created_by
     ) VALUES
     (
         admin_user_id, 'Admin Development Key',
-        '$2b$12 || encode(digest('ak_admin_dev_12345', 'sha256'), 'hex'),
+        encode(digest('ak_admin_dev_12345', 'sha256'), 'hex'),
         'ak_admin_dev',
         '["read", "write", "delete", "admin"]',
         10000, 100000,
@@ -365,14 +322,14 @@ BEGIN
     ),
     (
         demo_user_id, 'Demo API Key',
-        '$2b$12 || encode(digest('ak_demo_test_67890', 'sha256'), 'hex'),
+        encode(digest('ak_demo_test_67890', 'sha256'), 'hex'),
         'ak_demo_test',
         '["read", "write"]',
         1000, 10000,
         NOW() + INTERVAL '6 months',
         'system'
     );
-END $;
+END $$;
 
 -- Update some products to have sales
 UPDATE products SET 
@@ -380,7 +337,7 @@ UPDATE products SET
     sale_price = price * 0.8,
     sale_start_date = NOW() - INTERVAL '1 day',
     sale_end_date = NOW() + INTERVAL '30 days'
-WHERE sku IN ('SHIRT-COTTON-001', 'SHOES-SPORT-001', 'LAMP-DESK-001', 'SERUM-VITAMIN-001');
+WHERE sku IN ('SHIRT-COTTON-001', 'SHOES-SPORT-001', 'SERUM-VITAMIN-001');
 
 -- Add some view counts and ratings to make data more realistic
 UPDATE products SET 
@@ -393,10 +350,13 @@ WHERE status = 'active';
 -- Insert some sample log entries for demonstration
 INSERT INTO api_logs (level, message, module, method, user_id, ip_address, response_time, context) VALUES
 ('info', 'User registration completed successfully', 'users', 'register', null, '192.168.1.100', 250, '{"email": "demo@example.com"}'),
+('info', 'User login successful', 'users', 'login', 'demo', '192.168.1.100', 180, '{"username": "demouser"}'),
 ('info', 'Product search performed', 'products', 'searchProducts', 'demo', '192.168.1.100', 45, '{"query": "laptop", "results": 5}'),
 ('warn', 'Rate limit approaching for user', 'middleware', 'rateLimit', 'demo', '192.168.1.100', 12, '{"current": 85, "limit": 100}'),
 ('info', 'Product created successfully', 'products', 'createProduct', 'admin', '192.168.1.101', 180, '{"product_id": "new-product-123"}'),
-('error', 'Database connection timeout', 'database', 'query', null, '192.168.1.102', 5000, '{"error": "connection timeout", "query": "SELECT * FROM products"}');
+('error', 'Database connection timeout', 'database', 'query', null, '192.168.1.102', 5000, '{"error": "connection timeout", "query": "SELECT * FROM products"}'),
+('info', 'User profile updated', 'users', 'updateProfile', 'demo', '192.168.1.100', 95, '{"fields": ["first_name", "bio"]}'),
+('info', 'Admin accessed user stats', 'users', 'getUserStats', 'admin', '192.168.1.101', 320, '{"total_users": 5}');
 
 -- Create some materialized views for performance (optional)
 CREATE MATERIALIZED VIEW IF NOT EXISTS product_stats AS
@@ -428,9 +388,24 @@ LEFT JOIN products p ON c.id = p.category_id AND p.deleted_at IS NULL
 WHERE c.is_active = true
 GROUP BY c.id, c.name, c.slug;
 
+CREATE MATERIALIZED VIEW IF NOT EXISTS user_stats_summary AS
+SELECT 
+    COUNT(*) as total_users,
+    COUNT(*) FILTER (WHERE status = 'active') as active_users,
+    COUNT(*) FILTER (WHERE status = 'inactive') as inactive_users,
+    COUNT(*) FILTER (WHERE email_verified = true) as verified_users,
+    COUNT(*) FILTER (WHERE last_login >= NOW() - INTERVAL '24 hours') as active_today,
+    COUNT(*) FILTER (WHERE last_login >= NOW() - INTERVAL '7 days') as active_this_week,
+    COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours') as new_today,
+    COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') as new_this_week,
+    AVG(login_count) as avg_login_count
+FROM framework_users
+WHERE deleted_at IS NULL;
+
 -- Grant permissions on materialized views
 GRANT SELECT ON product_stats TO api_user;
 GRANT SELECT ON category_stats TO api_user;
+GRANT SELECT ON user_stats_summary TO api_user;
 
 -- Create indexes on materialized views
 CREATE INDEX IF NOT EXISTS idx_category_stats_slug ON category_stats(slug);
@@ -439,6 +414,7 @@ CREATE INDEX IF NOT EXISTS idx_category_stats_count ON category_stats(product_co
 -- Refresh materialized views
 REFRESH MATERIALIZED VIEW product_stats;
 REFRESH MATERIALIZED VIEW category_stats;
+REFRESH MATERIALIZED VIEW user_stats_summary;
 
 -- Final data validation and statistics
 DO $
@@ -446,14 +422,25 @@ DECLARE
     product_count INTEGER;
     user_count INTEGER;
     category_count INTEGER;
+    admin_user_id UUID;
 BEGIN
     SELECT COUNT(*) INTO product_count FROM products WHERE status = 'active';
-    SELECT COUNT(*) INTO user_count FROM api_users WHERE status = 'active';
+    SELECT COUNT(*) INTO user_count FROM framework_users WHERE status = 'active';
     SELECT COUNT(*) INTO category_count FROM product_categories WHERE is_active = true;
+    SELECT id INTO admin_user_id FROM framework_users WHERE username = 'admin';
     
     RAISE NOTICE 'Sample data insertion completed:';
     RAISE NOTICE '- Products: %', product_count;
     RAISE NOTICE '- Users: %', user_count;  
     RAISE NOTICE '- Categories: %', category_count;
-    RAISE NOTICE 'Database is ready for Chat 3 API Framework!';
+    RAISE NOTICE '- Admin User ID: %', admin_user_id;
+    RAISE NOTICE '';
+    RAISE NOTICE 'Default User Accounts Created:';
+    RAISE NOTICE '- admin@example.com (password: password123) - Admin access';
+    RAISE NOTICE '- demo@example.com (password: password123) - Regular user';
+    RAISE NOTICE '- manager@example.com (password: password123) - Product manager';
+    RAISE NOTICE '- customer@example.com (password: password123) - Customer';
+    RAISE NOTICE '- support@example.com (password: password123) - Support';
+    RAISE NOTICE '';
+    RAISE NOTICE 'Framework with built-in user management is ready!';
 END $;

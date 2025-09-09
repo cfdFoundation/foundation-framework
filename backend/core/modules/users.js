@@ -1,130 +1,48 @@
-// Demo Users API - Showcasing the Chat 2 Framework
-// Complete CRUD operations with authentication, validation, caching, and logging
+// backend/core/modules/users.js
+// Built-in User Management Module - Core Framework Feature
+// Provides authentication, role-based access control, and user management
 
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 const _moduleConfig = {
     routerName: 'users',
     version: 'v1',
-    authRequired: false, // Most endpoints require auth, but registration/login don't
+    authRequired: false,
     rateLimit: '100/hour',
+    isCore: true, // Mark as core module
     methods: {
         // Public endpoints
-        register: { 
-            public: true, 
-            rateLimit: '10/hour' 
-        },
-        login: { 
-            public: true, 
-            rateLimit: '20/hour' 
-        },
-        getPublicProfile: { 
-            public: true, 
-            rateLimit: '200/hour' 
-        },
+        register: { public: true, rateLimit: '10/hour' },
+        login: { public: true, rateLimit: '20/hour' },
+        getPublicProfile: { public: true, rateLimit: '200/hour' },
         
         // Authenticated endpoints
-        getProfile: { 
-            authRequired: true, 
-            rateLimit: '500/hour' 
-        },
-        updateProfile: { 
-            authRequired: true, 
-            rateLimit: '50/hour' 
-        },
-        deleteAccount: { 
-            authRequired: true, 
-            rateLimit: '5/hour' 
-        },
-        changePassword: { 
-            authRequired: true, 
-            rateLimit: '10/hour' 
-        },
+        getProfile: { authRequired: true, rateLimit: '500/hour' },
+        updateProfile: { authRequired: true, rateLimit: '50/hour' },
+        changePassword: { authRequired: true, rateLimit: '10/hour' },
+        deleteAccount: { authRequired: true, rateLimit: '5/hour' },
         
         // Admin endpoints
-        getAllUsers: { 
-            authRequired: true, 
-            rateLimit: '100/hour' 
-        },
-        getUserById: { 
-            authRequired: true, 
-            rateLimit: '200/hour' 
-        },
-        updateUserStatus: { 
-            authRequired: true, 
-            rateLimit: '50/hour' 
-        },
-        getUserStats: { 
-            authRequired: true, 
-            rateLimit: '100/hour' 
-        }
+        getAllUsers: { authRequired: true, roles: ['admin'], rateLimit: '100/hour' },
+        getUserById: { authRequired: true, roles: ['admin'], rateLimit: '200/hour' },
+        updateUserRoles: { authRequired: true, roles: ['admin'], rateLimit: '50/hour' },
+        getUserStats: { authRequired: true, roles: ['admin'], rateLimit: '100/hour' },
+        createUser: { authRequired: true, roles: ['admin'], rateLimit: '20/hour' },
+        
+        // Health check
+        health: { public: true, rateLimit: '100/hour' }
     }
 };
 
-// Initialize users table
-async function initializeUsersTable() {
-    try {
-        const createTableSQL = `
-            CREATE TABLE IF NOT EXISTS api_users (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                email VARCHAR(255) UNIQUE NOT NULL,
-                username VARCHAR(100) UNIQUE NOT NULL,
-                password_hash VARCHAR(255) NOT NULL,
-                first_name VARCHAR(100),
-                last_name VARCHAR(100),
-                phone VARCHAR(20),
-                avatar_url VARCHAR(500),
-                bio TEXT,
-                roles JSONB DEFAULT '["user"]',
-                permissions JSONB DEFAULT '["read"]',
-                status VARCHAR(50) DEFAULT 'active',
-                email_verified BOOLEAN DEFAULT false,
-                last_login TIMESTAMPTZ,
-                login_count INTEGER DEFAULT 0,
-                failed_login_attempts INTEGER DEFAULT 0,
-                locked_until TIMESTAMPTZ,
-                metadata JSONB DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW(),
-                created_by VARCHAR(100) DEFAULT 'system',
-                updated_by VARCHAR(100) DEFAULT 'system'
-            );
-        `;
-
-        await this.db.query(createTableSQL);
-
-        // Create indexes
-        const indexes = [
-            'CREATE INDEX IF NOT EXISTS idx_users_email ON api_users(email);',
-            'CREATE INDEX IF NOT EXISTS idx_users_username ON api_users(username);',
-            'CREATE INDEX IF NOT EXISTS idx_users_status ON api_users(status);',
-            'CREATE INDEX IF NOT EXISTS idx_users_roles ON api_users USING gin(roles);',
-            'CREATE INDEX IF NOT EXISTS idx_users_created_at ON api_users(created_at DESC);',
-            'CREATE INDEX IF NOT EXISTS idx_users_last_login ON api_users(last_login DESC);'
-        ];
-
-        for (const indexSQL of indexes) {
-            await this.db.query(indexSQL);
-        }
-
-        this.log('Users table initialized successfully');
-
-    } catch (error) {
-        this.log('Failed to initialize users table', 'error');
-        throw error;
-    }
-}
-
 // User registration
 async function register(req, data) {
-    this.log('Starting user registration');
+    this.log('User registration attempt', 'info');
 
-    await initializeUsersTable.call(this);
-
-    // Validation
+    // Enhanced validation
     this.util.validate(data, {
         email: { required: true, type: 'email', maxLength: 255 },
-        username: { required: true, minLength: 3, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+        username: { required: true, minLength: 3, maxLength: 50, pattern: /^[a-zA-Z0-9_-]+$/ },
         password: { required: true, minLength: 8, maxLength: 128 },
         first_name: { required: true, minLength: 1, maxLength: 100 },
         last_name: { required: true, minLength: 1, maxLength: 100 }
@@ -138,7 +56,7 @@ async function register(req, data) {
 
     // Check for existing user
     const existingUser = await this.db.query(
-        'SELECT id, email, username FROM api_users WHERE email = $1 OR username = $2',
+        'SELECT id, email, username FROM framework_users WHERE email = $1 OR username = $2 AND deleted_at IS NULL',
         [email, username]
     );
 
@@ -158,7 +76,7 @@ async function register(req, data) {
     const saltRounds = parseInt(process.env.HASH_ROUNDS || '12');
     const passwordHash = await bcrypt.hash(data.password, saltRounds);
 
-    // Create user
+    // Create user with default role
     const userData = {
         email,
         username,
@@ -168,17 +86,18 @@ async function register(req, data) {
         phone: phone || null,
         status: 'active',
         roles: JSON.stringify(['user']),
-        permissions: JSON.stringify(['read', 'write']),
+        permissions: JSON.stringify(['read']),
+        email_verified: false,
         created_by: 'registration',
         updated_by: 'registration'
     };
 
-    const user = await this.db.insert('api_users', userData);
+    const user = await this.db.insert('framework_users', userData);
 
     // Clear any user-related caches
     await this.cache.invalidate('users:*');
 
-    this.log(`User registered successfully: ${user.username} (${user.email})`);
+    this.log(`User registered successfully: ${user.username} (${user.email})`, 'info');
 
     // Return user data without sensitive information
     return {
@@ -197,13 +116,11 @@ async function register(req, data) {
 
 // User login
 async function login(req, data) {
-    this.log('User login attempt');
-
-    await initializeUsersTable.call(this);
+    this.log('User login attempt', 'info');
 
     // Validation
     this.util.validate(data, {
-        login: { required: true, minLength: 3 }, // email or username
+        login: { required: true, minLength: 3 },
         password: { required: true }
     });
 
@@ -214,13 +131,13 @@ async function login(req, data) {
     const userQuery = await this.db.query(
         `SELECT id, email, username, password_hash, first_name, last_name, roles, 
                 permissions, status, failed_login_attempts, locked_until, login_count
-         FROM api_users 
-         WHERE (email = $1 OR username = $1) AND status != 'deleted'`,
+         FROM framework_users 
+         WHERE (email = $1 OR username = $1) AND status != 'deleted' AND deleted_at IS NULL`,
         [login]
     );
 
     if (userQuery.rows.length === 0) {
-        this.log(`Login failed: user not found for ${login}`);
+        this.log(`Login failed: user not found for ${login}`, 'warn');
         throw {
             code: 'INVALID_CREDENTIALS',
             message: 'Invalid email/username or password',
@@ -232,7 +149,7 @@ async function login(req, data) {
 
     // Check if account is locked
     if (user.locked_until && new Date(user.locked_until) > new Date()) {
-        this.log(`Login failed: account locked for ${user.username}`);
+        this.log(`Login failed: account locked for ${user.username}`, 'warn');
         throw {
             code: 'ACCOUNT_LOCKED',
             message: 'Account is temporarily locked due to too many failed login attempts',
@@ -243,7 +160,7 @@ async function login(req, data) {
 
     // Check if account is active
     if (user.status !== 'active') {
-        this.log(`Login failed: account inactive for ${user.username}`);
+        this.log(`Login failed: account inactive for ${user.username}`, 'warn');
         throw {
             code: 'ACCOUNT_INACTIVE',
             message: 'Account is not active',
@@ -261,13 +178,13 @@ async function login(req, data) {
             ? new Date(Date.now() + 30 * 60 * 1000) // Lock for 30 minutes
             : null;
 
-        await this.db.update('api_users', user.id, {
+        await this.db.update('framework_users', user.id, {
             failed_login_attempts: failedAttempts,
             locked_until: lockUntil,
             updated_by: 'system'
         });
 
-        this.log(`Login failed: invalid password for ${user.username} (attempt ${failedAttempts})`);
+        this.log(`Login failed: invalid password for ${user.username} (attempt ${failedAttempts})`, 'warn');
         
         throw {
             code: 'INVALID_CREDENTIALS',
@@ -277,7 +194,7 @@ async function login(req, data) {
     }
 
     // Successful login - reset failed attempts and update login info
-    await this.db.update('api_users', user.id, {
+    await this.db.update('framework_users', user.id, {
         failed_login_attempts: 0,
         locked_until: null,
         last_login: new Date(),
@@ -294,10 +211,10 @@ async function login(req, data) {
         permissions: JSON.parse(user.permissions || '["read"]')
     };
 
-    const MiddlewarePipeline = require('../core/middlewarePipeline');
-    const token = MiddlewarePipeline.generateToken(tokenPayload, '24h');
+    const jwtSecret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+    const token = jwt.sign(tokenPayload, jwtSecret, { expiresIn: '24h' });
 
-    this.log(`User logged in successfully: ${user.username}`);
+    this.log(`User logged in successfully: ${user.username}`, 'info');
 
     return {
         user: {
@@ -317,9 +234,7 @@ async function login(req, data) {
 
 // Get public profile (no auth required)
 async function getPublicProfile(req, data) {
-    this.log('Fetching public user profile');
-
-    await initializeUsersTable.call(this);
+    this.log('Fetching public user profile', 'info');
 
     const identifier = this.util.sanitizeString(data.user);
     
@@ -334,8 +249,8 @@ async function getPublicProfile(req, data) {
     // Check if identifier is UUID (ID) or username
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
     const sql = isUUID 
-        ? 'SELECT id, username, first_name, last_name, avatar_url, bio, created_at FROM api_users WHERE id = $1 AND status = $2'
-        : 'SELECT id, username, first_name, last_name, avatar_url, bio, created_at FROM api_users WHERE username = $1 AND status = $2';
+        ? 'SELECT id, username, first_name, last_name, avatar_url, bio, created_at FROM framework_users WHERE id = $1 AND status = $2 AND deleted_at IS NULL'
+        : 'SELECT id, username, first_name, last_name, avatar_url, bio, created_at FROM framework_users WHERE username = $1 AND status = $2 AND deleted_at IS NULL';
 
     const cacheKey = `public_profile:${identifier}`;
     const result = await this.db.query(sql, [identifier, 'active'], cacheKey, 300);
@@ -350,7 +265,7 @@ async function getPublicProfile(req, data) {
 
     const user = result.rows[0];
 
-    this.log(`Public profile retrieved for user: ${user.username}`);
+    this.log(`Public profile retrieved for user: ${user.username}`, 'info');
 
     return {
         id: user.id,
@@ -366,7 +281,7 @@ async function getPublicProfile(req, data) {
 
 // Get current user profile (authenticated)
 async function getProfile(req, data) {
-    this.log('Fetching user profile');
+    this.log('Fetching user profile', 'info');
 
     const userId = this.context.user.id;
     const cacheKey = `user_profile:${userId}`;
@@ -374,9 +289,9 @@ async function getProfile(req, data) {
     const sql = `
         SELECT id, email, username, first_name, last_name, phone, avatar_url, bio,
                roles, permissions, status, email_verified, last_login, login_count,
-               metadata, created_at, updated_at
-        FROM api_users 
-        WHERE id = $1
+               preferences, created_at, updated_at
+        FROM framework_users 
+        WHERE id = $1 AND deleted_at IS NULL
     `;
 
     const result = await this.db.query(sql, [userId], cacheKey, 300);
@@ -391,7 +306,7 @@ async function getProfile(req, data) {
 
     const user = result.rows[0];
 
-    this.log(`Profile retrieved for user: ${user.username}`);
+    this.log(`Profile retrieved for user: ${user.username}`, 'info');
 
     return {
         id: user.id,
@@ -408,7 +323,7 @@ async function getProfile(req, data) {
         email_verified: user.email_verified,
         last_login: user.last_login,
         login_count: user.login_count,
-        metadata: JSON.parse(user.metadata || '{}'),
+        preferences: JSON.parse(user.preferences || '{}'),
         created_at: user.created_at,
         updated_at: user.updated_at,
         fromCache: result.fromCache
@@ -417,7 +332,7 @@ async function getProfile(req, data) {
 
 // Update user profile
 async function updateProfile(req, data) {
-    this.log('Updating user profile');
+    this.log('Updating user profile', 'info');
 
     const userId = this.context.user.id;
 
@@ -473,8 +388,7 @@ async function updateProfile(req, data) {
 
     updateData.updated_by = userId;
 
-    // Update user
-    const user = await this.db.update('api_users', userId, updateData);
+    const user = await this.db.update('framework_users', userId, updateData);
 
     if (!user) {
         throw {
@@ -489,7 +403,7 @@ async function updateProfile(req, data) {
     await this.cache.invalidate(`public_profile:${user.username}`);
     await this.cache.invalidate(`public_profile:${userId}`);
 
-    this.log(`Profile updated for user: ${user.username}`);
+    this.log(`Profile updated for user: ${user.username}`, 'info');
 
     return {
         id: user.id,
@@ -507,11 +421,10 @@ async function updateProfile(req, data) {
 
 // Change password
 async function changePassword(req, data) {
-    this.log('Changing user password');
+    this.log('Changing user password', 'info');
 
     const userId = this.context.user.id;
 
-    // Validation
     this.util.validate(data, {
         current_password: { required: true },
         new_password: { required: true, minLength: 8, maxLength: 128 },
@@ -526,9 +439,8 @@ async function changePassword(req, data) {
         };
     }
 
-    // Get current user with password hash
     const userResult = await this.db.query(
-        'SELECT password_hash, username FROM api_users WHERE id = $1',
+        'SELECT password_hash, username FROM framework_users WHERE id = $1 AND deleted_at IS NULL',
         [userId]
     );
 
@@ -546,7 +458,7 @@ async function changePassword(req, data) {
     const isValidPassword = await bcrypt.compare(data.current_password, user.password_hash);
 
     if (!isValidPassword) {
-        this.log(`Password change failed: invalid current password for ${user.username}`);
+        this.log(`Password change failed: invalid current password for ${user.username}`, 'warn');
         throw {
             code: 'INVALID_CURRENT_PASSWORD',
             message: 'Current password is incorrect',
@@ -558,16 +470,14 @@ async function changePassword(req, data) {
     const saltRounds = parseInt(process.env.HASH_ROUNDS || '12');
     const newPasswordHash = await bcrypt.hash(data.new_password, saltRounds);
 
-    // Update password
-    await this.db.update('api_users', userId, {
+    await this.db.update('framework_users', userId, {
         password_hash: newPasswordHash,
         updated_by: userId
     });
 
-    // Invalidate user caches
     await this.cache.invalidate(`user_profile:${userId}`);
 
-    this.log(`Password changed successfully for user: ${user.username}`);
+    this.log(`Password changed successfully for user: ${user.username}`, 'info');
 
     return {
         message: 'Password changed successfully',
@@ -577,11 +487,10 @@ async function changePassword(req, data) {
 
 // Delete user account (soft delete)
 async function deleteAccount(req, data) {
-    this.log('Deleting user account');
+    this.log('Deleting user account', 'info');
 
     const userId = this.context.user.id;
 
-    // Confirmation required
     this.util.validate(data, {
         confirmation: { required: true }
     });
@@ -594,12 +503,13 @@ async function deleteAccount(req, data) {
         };
     }
 
-    // Soft delete (change status to deleted)
-    const user = await this.db.update('api_users', userId, {
+    const user = await this.db.update('framework_users', userId, {
         status: 'deleted',
+        deleted_at: new Date(),
         email: `deleted_${Date.now()}_${this.util.generateShortId()}@deleted.local`,
         username: `deleted_${Date.now()}_${this.util.generateShortId()}`,
-        updated_by: userId
+        updated_by: userId,
+        deleted_by: userId
     });
 
     if (!user) {
@@ -610,11 +520,10 @@ async function deleteAccount(req, data) {
         };
     }
 
-    // Invalidate all user caches
     await this.cache.invalidate(`user_profile:${userId}`);
     await this.cache.invalidate('users:*');
 
-    this.log(`Account deleted for user: ${userId}`);
+    this.log(`Account deleted for user: ${userId}`, 'info');
 
     return {
         message: 'Account deleted successfully',
@@ -622,18 +531,9 @@ async function deleteAccount(req, data) {
     };
 }
 
-// Get all users (admin function with pagination)
+// Get all users (admin function)
 async function getAllUsers(req, data) {
-    this.log('Fetching all users');
-
-    // Basic admin check (in real app, you'd check roles/permissions)
-    if (!this.context.hasRole?.('admin')) {
-        throw {
-            code: 'INSUFFICIENT_PERMISSIONS',
-            message: 'Admin access required',
-            statusCode: 403
-        };
-    }
+    this.log('Fetching all users (admin)', 'info');
 
     const limit = Math.min(this.util.parseInteger(data.limit, 20), 100);
     const offset = this.util.parseInteger(data.offset, 0);
@@ -643,13 +543,12 @@ async function getAllUsers(req, data) {
     let sql = `
         SELECT id, email, username, first_name, last_name, status, roles,
                last_login, login_count, created_at, updated_at
-        FROM api_users 
-        WHERE status = $1
+        FROM framework_users 
+        WHERE status = $1 AND deleted_at IS NULL
     `;
     let params = [status];
     let paramIndex = 2;
 
-    // Add search filter
     if (search) {
         sql += ` AND (username ILIKE $${paramIndex} OR email ILIKE $${paramIndex} OR 
                      first_name ILIKE $${paramIndex} OR last_name ILIKE $${paramIndex})`;
@@ -663,20 +562,14 @@ async function getAllUsers(req, data) {
     const cacheKey = `all_users:${status}:${search || 'all'}:${limit}:${offset}`;
     const result = await this.db.query(sql, params, cacheKey, 300);
 
-    // Get total count
-    let countSQL = 'SELECT COUNT(*) as total FROM api_users WHERE status = $1';
-    let countParams = [status];
-
-    if (search) {
-        countSQL += ` AND (username ILIKE $2 OR email ILIKE $2 OR 
-                          first_name ILIKE $2 OR last_name ILIKE $2)`;
-        countParams.push(`%${search}%`);
-    }
+    const countSQL = 'SELECT COUNT(*) as total FROM framework_users WHERE status = $1 AND deleted_at IS NULL' + 
+                     (search ? ` AND (username ILIKE $2 OR email ILIKE $2 OR first_name ILIKE $2 OR last_name ILIKE $2)` : '');
+    const countParams = search ? [status, `%${search}%`] : [status];
 
     const countResult = await this.db.query(countSQL, countParams, `${cacheKey}:count`, 300);
     const total = parseInt(countResult.rows[0]?.total || 0);
 
-    this.log(`Retrieved ${result.rows.length} users`);
+    this.log(`Retrieved ${result.rows.length} users`, 'info');
 
     return {
         users: result.rows.map(user => ({
@@ -693,18 +586,52 @@ async function getAllUsers(req, data) {
     };
 }
 
-// Get user statistics
-async function getUserStats(req, data) {
-    this.log('Generating user statistics');
+// Update user roles (admin function)
+async function updateUserRoles(req, data) {
+    this.log('Updating user roles (admin)', 'info');
 
-    // Admin check
-    if (!this.context.hasRole?.('admin')) {
+    this.util.validate(data, {
+        user_id: { required: true },
+        roles: { required: true },
+        permissions: { required: true }
+    });
+
+    const userId = this.util.sanitizeString(data.user_id);
+    const roles = Array.isArray(data.roles) ? data.roles : [];
+    const permissions = Array.isArray(data.permissions) ? data.permissions : [];
+
+    const user = await this.db.update('framework_users', userId, {
+        roles: JSON.stringify(roles),
+        permissions: JSON.stringify(permissions),
+        updated_by: this.context.user.id
+    });
+
+    if (!user) {
         throw {
-            code: 'INSUFFICIENT_PERMISSIONS',
-            message: 'Admin access required',
-            statusCode: 403
+            code: 'USER_NOT_FOUND',
+            message: 'User not found',
+            statusCode: 404
         };
     }
+
+    await this.cache.invalidate(`user_profile:${userId}`);
+    await this.cache.invalidate('users:*');
+
+    this.log(`Updated roles for user: ${user.username}`, 'info');
+
+    return {
+        id: user.id,
+        username: user.username,
+        roles: JSON.parse(user.roles),
+        permissions: JSON.parse(user.permissions),
+        updated_at: user.updated_at,
+        message: 'User roles updated successfully'
+    };
+}
+
+// Get user statistics (admin function)
+async function getUserStats(req, data) {
+    this.log('Generating user statistics (admin)', 'info');
 
     const cacheKey = 'user_stats';
 
@@ -721,26 +648,26 @@ async function getUserStats(req, data) {
             AVG(login_count) as avg_login_count,
             MAX(created_at) as newest_user_date,
             MAX(last_login) as last_activity
-        FROM api_users
+        FROM framework_users
+        WHERE deleted_at IS NULL
     `;
 
     const result = await this.db.query(sql, [], cacheKey, 600);
     const stats = result.rows[0];
 
-    // Get role distribution
     const roleSQL = `
         SELECT 
             jsonb_array_elements_text(roles) as role,
             COUNT(*) as count
-        FROM api_users 
-        WHERE status = 'active'
+        FROM framework_users 
+        WHERE status = 'active' AND deleted_at IS NULL
         GROUP BY role
         ORDER BY count DESC
     `;
 
     const roleResult = await this.db.query(roleSQL, [], `${cacheKey}:roles`, 600);
 
-    this.log('User statistics generated');
+    this.log('User statistics generated', 'info');
 
     return {
         overview: {
@@ -766,23 +693,85 @@ async function getUserStats(req, data) {
     };
 }
 
-// Health check for users module
+// Create user (admin function)
+async function createUser(req, data) {
+    this.log('Creating user (admin)', 'info');
+
+    this.util.validate(data, {
+        email: { required: true, type: 'email', maxLength: 255 },
+        username: { required: true, minLength: 3, maxLength: 50, pattern: /^[a-zA-Z0-9_-]+$/ },
+        password: { required: true, minLength: 8, maxLength: 128 },
+        first_name: { required: true, minLength: 1, maxLength: 100 },
+        last_name: { required: true, minLength: 1, maxLength: 100 }
+    });
+
+    const email = this.util.sanitizeString(data.email).toLowerCase();
+    const username = this.util.sanitizeString(data.username).toLowerCase();
+
+    // Check for existing user
+    const existingUser = await this.db.query(
+        'SELECT id FROM framework_users WHERE email = $1 OR username = $2 AND deleted_at IS NULL',
+        [email, username]
+    );
+
+    if (existingUser.rows.length > 0) {
+        throw {
+            code: 'USER_ALREADY_EXISTS',
+            message: 'User with this email or username already exists',
+            statusCode: 409
+        };
+    }
+
+    // Hash password
+    const saltRounds = parseInt(process.env.HASH_ROUNDS || '12');
+    const passwordHash = await bcrypt.hash(data.password, saltRounds);
+
+    const userData = {
+        email,
+        username,
+        password_hash: passwordHash,
+        first_name: this.util.sanitizeString(data.first_name),
+        last_name: this.util.sanitizeString(data.last_name),
+        phone: this.util.sanitizeString(data.phone) || null,
+        status: data.status || 'active',
+        roles: JSON.stringify(data.roles || ['user']),
+        permissions: JSON.stringify(data.permissions || ['read']),
+        email_verified: data.email_verified || false,
+        created_by: this.context.user.id,
+        updated_by: this.context.user.id
+    };
+
+    const user = await this.db.insert('framework_users', userData);
+
+    await this.cache.invalidate('users:*');
+
+    this.log(`User created by admin: ${user.username} (${user.email})`, 'info');
+
+    return {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        roles: JSON.parse(user.roles),
+        permissions: JSON.parse(user.permissions),
+        status: user.status,
+        created_at: user.created_at,
+        message: 'User created successfully'
+    };
+}
+
+// Health check
 async function health(req, data) {
     try {
-        await initializeUsersTable.call(this);
-
-        // Test basic operations
-        const testQuery = await this.db.query(
-            'SELECT COUNT(*) as count FROM api_users WHERE status = $1', 
-            ['active']
-        );
+        const userCount = await this.db.query('SELECT COUNT(*) as count FROM framework_users WHERE status = $1 AND deleted_at IS NULL', ['active']);
 
         return {
             module: 'users',
             status: 'healthy',
             database: {
                 connected: true,
-                user_count: parseInt(testQuery.rows[0]?.count || 0)
+                user_count: parseInt(userCount.rows[0]?.count || 0)
             },
             timestamp: this.util.getCurrentTimestamp()
         };
@@ -806,6 +795,8 @@ module.exports = {
     changePassword,
     deleteAccount,
     getAllUsers,
+    updateUserRoles,
     getUserStats,
+    createUser,
     health
 };

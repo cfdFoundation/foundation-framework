@@ -70,58 +70,128 @@ class DatabaseService {
 
     async initializeRedis() {
         try {
+            // Debug Redis environment
+            console.log('[Database] Redis Configuration:');
+            console.log('  REDIS_HOST:', process.env.REDIS_HOST || 'redis-1');
+            console.log('  REDIS_PORT:', process.env.REDIS_PORT || '6379');
+            console.log('  REDIS_CLUSTER_NODES:', process.env.REDIS_CLUSTER_NODES || 'not set');
+            console.log('  REDIS_PASSWORD:', process.env.REDIS_PASSWORD ? '[SET]' : '[NOT SET]');
+
             // Try cluster first if nodes are configured
             const clusterNodes = process.env.REDIS_CLUSTER_NODES;
             
             if (clusterNodes) {
+                console.log('[Database] Attempting Redis cluster connection...');
                 const nodes = clusterNodes.split(',').map(node => {
                     const [host, port] = node.trim().split(':');
                     return { host, port: parseInt(port) };
                 });
 
-                this.redisCluster = Redis.createCluster({
-                    rootNodes: nodes,
-                    defaults: {
-                        password: process.env.REDIS_PASSWORD || undefined,
-                        connectTimeout: 5000,
-                        lazyConnect: true
-                    }
-                });
+                console.log('[Database] Cluster nodes:', nodes);
 
-                await this.redisCluster.connect();
-                console.log(`[Database] Redis cluster connected (${nodes.length} nodes)`);
-                return;
+                try {
+                    // FIXED: Use correct Redis cluster configuration
+                    const Redis = require('redis');
+                    
+                    this.redisCluster = Redis.createCluster({
+                        rootNodes: nodes,
+                        defaults: {
+                            password: process.env.REDIS_PASSWORD || undefined,
+                            socket: {
+                                connectTimeout: 10000,
+                                commandTimeout: 5000,
+                                reconnectStrategy: (retries) => Math.min(retries * 50, 1000)
+                            }
+                        },
+                        useReplicas: true
+                    });
+
+                    // Add error handlers before connecting
+                    this.redisCluster.on('error', (err) => {
+                        console.error('[Database] Redis cluster error:', err.message);
+                    });
+
+                    this.redisCluster.on('connect', () => {
+                        console.log('[Database] Redis cluster connecting...');
+                    });
+
+                    this.redisCluster.on('ready', () => {
+                        console.log('[Database] Redis cluster ready');
+                    });
+
+                    await this.redisCluster.connect();
+                    console.log(`[Database] ✅ Redis cluster connected (${nodes.length} nodes)`);
+                    return;
+                } catch (clusterError) {
+                    console.warn('[Database] Cluster connection failed:', clusterError.message);
+                    console.log('[Database] Falling back to single Redis instance...');
+                    
+                    // Clean up failed cluster
+                    if (this.redisCluster) {
+                        try {
+                            await this.redisCluster.quit();
+                        } catch (e) {
+                            // Ignore cleanup errors
+                        }
+                        this.redisCluster = null;
+                    }
+                }
             }
 
-            // Fallback to single Redis instance
+            // Fallback to single Redis instance - COMPLETELY REWRITTEN
+            const redisHost = process.env.REDIS_HOST || 'redis-1';
+            const redisPort = parseInt(process.env.REDIS_PORT || '6379');
+            
+            console.log(`[Database] Attempting single Redis connection to ${redisHost}:${redisPort}`);
+
+            // FIXED: Use correct Redis v4+ syntax
+            const Redis = require('redis');
+            
             this.redisClient = Redis.createClient({
-                host: process.env.REDIS_HOST || 'localhost',
-                port: parseInt(process.env.REDIS_PORT || '6379'),
+                socket: {
+                    host: redisHost,
+                    port: redisPort,
+                    connectTimeout: 10000,
+                    commandTimeout: 5000,
+                    reconnectStrategy: (retries) => Math.min(retries * 50, 1000)
+                },
                 password: process.env.REDIS_PASSWORD || undefined,
-                db: parseInt(process.env.REDIS_DB || '0'),
-                connectTimeout: 5000,
-                lazyConnect: true,
-                retryDelayOnFailover: 100,
-                maxRetriesPerRequest: 3
+                database: parseInt(process.env.REDIS_DB || '0')
             });
 
+            // Add event handlers before connecting
             this.redisClient.on('error', (err) => {
-                console.error('[Database] Redis error:', err.message);
+                console.error(`[Database] Redis error on ${redisHost}:${redisPort} -`, err.message);
             });
 
             this.redisClient.on('connect', () => {
-                console.log('[Database] Redis connected');
+                console.log(`[Database] ✅ Redis connecting to ${redisHost}:${redisPort}`);
             });
 
+            this.redisClient.on('ready', () => {
+                console.log(`[Database] ✅ Redis ready at ${redisHost}:${redisPort}`);
+            });
+
+            this.redisClient.on('reconnecting', () => {
+                console.log(`[Database] Redis reconnecting to ${redisHost}:${redisPort}`);
+            });
+
+            this.redisClient.on('end', () => {
+                console.log(`[Database] Redis connection ended`);
+            });
+
+            // Connect to Redis
             await this.redisClient.connect();
+            console.log(`[Database] ✅ Successfully connected to Redis at ${redisHost}:${redisPort}`);
 
         } catch (error) {
             console.warn('[Database] Redis connection failed, continuing without cache:', error.message);
+            console.log('[Database] Full error:', error);
             this.redisClient = null;
             this.redisCluster = null;
         }
     }
-
+    
     async testConnections() {
         // Test PostgreSQL
         try {

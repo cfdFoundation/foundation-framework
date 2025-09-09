@@ -1,4 +1,5 @@
--- Chat 3 Database Initialization
+-- sql/init/01-init.sql
+-- Foundation Database Initialization with Built-in User Management
 -- Enhanced database setup for production Docker environment
 
 -- Enable required extensions
@@ -55,8 +56,10 @@ CREATE INDEX IF NOT EXISTS idx_api_logs_instance ON api_logs(instance_id, timest
 CREATE INDEX IF NOT EXISTS idx_api_logs_errors ON api_logs(timestamp DESC) WHERE level IN ('error', 'warn');
 CREATE INDEX IF NOT EXISTS idx_api_logs_performance ON api_logs(response_time DESC) WHERE response_time IS NOT NULL;
 
--- Enhanced users table with better security and features
-CREATE TABLE IF NOT EXISTS api_users (
+-- CORE FRAMEWORK USER MANAGEMENT SYSTEM
+-- Comprehensive user management with authentication, authorization, and security features
+
+CREATE TABLE IF NOT EXISTS framework_users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
     username VARCHAR(100) UNIQUE NOT NULL,
@@ -67,7 +70,7 @@ CREATE TABLE IF NOT EXISTS api_users (
     avatar_url VARCHAR(500),
     bio TEXT,
     
-    -- Roles and permissions
+    -- Core authentication and authorization
     roles JSONB DEFAULT '["user"]',
     permissions JSONB DEFAULT '["read"]',
     
@@ -85,23 +88,22 @@ CREATE TABLE IF NOT EXISTS api_users (
     password_reset_token VARCHAR(255),
     password_reset_expires TIMESTAMPTZ,
     
-    -- Two-factor authentication
+    -- Two-factor authentication (future expansion)
     two_factor_enabled BOOLEAN DEFAULT false,
     two_factor_secret VARCHAR(255),
     two_factor_backup_codes JSONB,
     
-    -- API access
+    -- API access and rate limiting
     api_rate_limit INTEGER DEFAULT 1000,
     api_quota_used INTEGER DEFAULT 0,
     api_quota_reset_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '1 hour',
     
-    -- Preferences and metadata
+    -- User preferences and customization
     timezone VARCHAR(50) DEFAULT 'UTC',
     language VARCHAR(10) DEFAULT 'en',
     preferences JSONB DEFAULT '{}',
-    metadata JSONB DEFAULT '{}',
     
-    -- Audit fields
+    -- Audit and tracking
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     created_by VARCHAR(100) DEFAULT 'system',
@@ -112,18 +114,95 @@ CREATE TABLE IF NOT EXISTS api_users (
     deleted_by VARCHAR(100)
 );
 
--- Enhanced indexes for users
-CREATE INDEX IF NOT EXISTS idx_users_email_active ON api_users(email) WHERE status = 'active' AND deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_users_username_active ON api_users(username) WHERE status = 'active' AND deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_users_status ON api_users(status);
-CREATE INDEX IF NOT EXISTS idx_users_roles ON api_users USING gin(roles);
-CREATE INDEX IF NOT EXISTS idx_users_email_verified ON api_users(email_verified);
-CREATE INDEX IF NOT EXISTS idx_users_last_login ON api_users(last_login DESC) WHERE last_login IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_users_locked ON api_users(locked_until) WHERE locked_until IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_users_created_at ON api_users(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_users_deleted ON api_users(deleted_at) WHERE deleted_at IS NOT NULL;
+-- Comprehensive indexes for user management
+CREATE INDEX IF NOT EXISTS idx_framework_users_email_active ON framework_users(email) WHERE status = 'active' AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_framework_users_username_active ON framework_users(username) WHERE status = 'active' AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_framework_users_status ON framework_users(status);
+CREATE INDEX IF NOT EXISTS idx_framework_users_roles ON framework_users USING gin(roles);
+CREATE INDEX IF NOT EXISTS idx_framework_users_permissions ON framework_users USING gin(permissions);
+CREATE INDEX IF NOT EXISTS idx_framework_users_email_verified ON framework_users(email_verified);
+CREATE INDEX IF NOT EXISTS idx_framework_users_last_login ON framework_users(last_login DESC) WHERE last_login IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_framework_users_locked ON framework_users(locked_until) WHERE locked_until IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_framework_users_created_at ON framework_users(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_framework_users_deleted ON framework_users(deleted_at) WHERE deleted_at IS NOT NULL;
 
--- Product categories table with hierarchy support
+-- API Keys table for enhanced authentication (optional, for API-only access)
+CREATE TABLE IF NOT EXISTS framework_api_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES framework_users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    key_hash VARCHAR(255) NOT NULL UNIQUE,
+    key_prefix VARCHAR(20) NOT NULL, -- For identification without full key
+    
+    -- Permissions and limits
+    permissions JSONB DEFAULT '["read"]',
+    rate_limit INTEGER DEFAULT 1000,
+    quota_limit INTEGER DEFAULT 10000,
+    quota_used INTEGER DEFAULT 0,
+    quota_reset_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '1 month',
+    
+    -- Access control
+    allowed_ips JSONB DEFAULT '[]',
+    allowed_domains JSONB DEFAULT '[]',
+    cors_origins JSONB DEFAULT '[]',
+    
+    -- Usage tracking
+    last_used TIMESTAMPTZ,
+    usage_count INTEGER DEFAULT 0,
+    
+    -- Expiration
+    expires_at TIMESTAMPTZ,
+    
+    -- Status
+    is_active BOOLEAN DEFAULT true,
+    
+    -- Audit
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by VARCHAR(100),
+    
+    -- Soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by VARCHAR(100)
+);
+
+-- Indexes for API keys
+CREATE INDEX IF NOT EXISTS idx_framework_api_keys_hash ON framework_api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_framework_api_keys_user ON framework_api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_framework_api_keys_prefix ON framework_api_keys(key_prefix);
+CREATE INDEX IF NOT EXISTS idx_framework_api_keys_active ON framework_api_keys(is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_framework_api_keys_expires ON framework_api_keys(expires_at) WHERE expires_at IS NOT NULL;
+
+-- User sessions table (alternative to Redis for some use cases)
+CREATE TABLE IF NOT EXISTS framework_user_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255) NOT NULL UNIQUE,
+    user_id UUID REFERENCES framework_users(id) ON DELETE CASCADE,
+    
+    -- Session data
+    data JSONB DEFAULT '{}',
+    
+    -- Security
+    ip_address INET,
+    user_agent TEXT,
+    csrf_token VARCHAR(255),
+    
+    -- Timing
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_accessed TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '24 hours',
+    
+    -- Status
+    is_active BOOLEAN DEFAULT true
+);
+
+-- Indexes for sessions
+CREATE INDEX IF NOT EXISTS idx_framework_sessions_session_id ON framework_user_sessions(session_id);
+CREATE INDEX IF NOT EXISTS idx_framework_sessions_user ON framework_user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_framework_sessions_expires ON framework_user_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_framework_sessions_active ON framework_user_sessions(is_active, last_accessed DESC) WHERE is_active = true;
+
+-- Enhanced products system (from previous implementation)
 CREATE TABLE IF NOT EXISTS product_categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
@@ -153,8 +232,8 @@ CREATE TABLE IF NOT EXISTS product_categories (
     -- Audit fields
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    created_by VARCHAR(100),
-    updated_by VARCHAR(100)
+    created_by UUID,
+    updated_by UUID
 );
 
 -- Indexes for categories
@@ -255,12 +334,12 @@ CREATE TABLE IF NOT EXISTS products (
     version INTEGER DEFAULT 1,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    created_by VARCHAR(100),
-    updated_by VARCHAR(100),
+    created_by UUID,
+    updated_by UUID,
     
     -- Soft delete
     deleted_at TIMESTAMPTZ,
-    deleted_by VARCHAR(100)
+    deleted_by UUID
 );
 
 -- Comprehensive indexes for products
@@ -298,83 +377,7 @@ CREATE INDEX IF NOT EXISTS idx_products_category_status_price ON products(catego
 CREATE INDEX IF NOT EXISTS idx_products_brand_status_created ON products(brand, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_products_status_featured_rating ON products(status, is_featured, rating_average DESC);
 
--- API Keys table for enhanced authentication
-CREATE TABLE IF NOT EXISTS api_keys (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES api_users(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    key_hash VARCHAR(255) NOT NULL UNIQUE,
-    key_prefix VARCHAR(20) NOT NULL, -- For identification without full key
-    
-    -- Permissions and limits
-    permissions JSONB DEFAULT '["read"]',
-    rate_limit INTEGER DEFAULT 1000,
-    quota_limit INTEGER DEFAULT 10000,
-    quota_used INTEGER DEFAULT 0,
-    quota_reset_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '1 month',
-    
-    -- Access control
-    allowed_ips JSONB DEFAULT '[]',
-    allowed_domains JSONB DEFAULT '[]',
-    cors_origins JSONB DEFAULT '[]',
-    
-    -- Usage tracking
-    last_used TIMESTAMPTZ,
-    usage_count INTEGER DEFAULT 0,
-    
-    -- Expiration
-    expires_at TIMESTAMPTZ,
-    
-    -- Status
-    is_active BOOLEAN DEFAULT true,
-    
-    -- Audit
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    created_by VARCHAR(100),
-    
-    -- Soft delete
-    deleted_at TIMESTAMPTZ,
-    deleted_by VARCHAR(100)
-);
-
--- Indexes for API keys
-CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
-CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
-CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
-CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active) WHERE is_active = true;
-CREATE INDEX IF NOT EXISTS idx_api_keys_expires ON api_keys(expires_at) WHERE expires_at IS NOT NULL;
-
--- Session storage table (alternative to Redis for some use cases)
-CREATE TABLE IF NOT EXISTS user_sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id VARCHAR(255) NOT NULL UNIQUE,
-    user_id UUID REFERENCES api_users(id) ON DELETE CASCADE,
-    
-    -- Session data
-    data JSONB DEFAULT '{}',
-    
-    -- Security
-    ip_address INET,
-    user_agent TEXT,
-    csrf_token VARCHAR(255),
-    
-    -- Timing
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    last_accessed TIMESTAMPTZ DEFAULT NOW(),
-    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '24 hours',
-    
-    -- Status
-    is_active BOOLEAN DEFAULT true
-);
-
--- Indexes for sessions
-CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON user_sessions(session_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON user_sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_sessions_active ON user_sessions(is_active, last_accessed DESC) WHERE is_active = true;
-
--- Create function for updating updated_at timestamps
+-- Create function to update updated_at timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -384,9 +387,14 @@ END;
 $$ language 'plpgsql';
 
 -- Create triggers for automatic updated_at updates
-DROP TRIGGER IF EXISTS update_api_users_updated_at ON api_users;
-CREATE TRIGGER update_api_users_updated_at 
-    BEFORE UPDATE ON api_users 
+DROP TRIGGER IF EXISTS update_framework_users_updated_at ON framework_users;
+CREATE TRIGGER update_framework_users_updated_at 
+    BEFORE UPDATE ON framework_users 
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_framework_api_keys_updated_at ON framework_api_keys;
+CREATE TRIGGER update_framework_api_keys_updated_at 
+    BEFORE UPDATE ON framework_api_keys 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 DROP TRIGGER IF EXISTS update_product_categories_updated_at ON product_categories;
@@ -397,11 +405,6 @@ CREATE TRIGGER update_product_categories_updated_at
 DROP TRIGGER IF EXISTS update_products_updated_at ON products;
 CREATE TRIGGER update_products_updated_at 
     BEFORE UPDATE ON products 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_api_keys_updated_at ON api_keys;
-CREATE TRIGGER update_api_keys_updated_at 
-    BEFORE UPDATE ON api_keys 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Function to clean up old logs (for maintenance)
@@ -431,7 +434,7 @@ RETURNS INTEGER AS $$
 DECLARE
     deleted_count INTEGER;
 BEGIN
-    DELETE FROM user_sessions 
+    DELETE FROM framework_user_sessions 
     WHERE expires_at < NOW() OR (last_accessed < NOW() - INTERVAL '7 days');
     
     GET DIAGNOSTICS deleted_count = ROW_COUNT;
@@ -481,24 +484,17 @@ SELECT * FROM active_products
 WHERE is_featured = true 
 ORDER BY created_at DESC;
 
-CREATE OR REPLACE VIEW low_stock_products AS
-SELECT * FROM active_products 
-WHERE track_inventory = true 
-    AND stock_quantity <= low_stock_threshold
-    AND stock_quantity > 0
-ORDER BY stock_quantity ASC;
-
-CREATE OR REPLACE VIEW out_of_stock_products AS
-SELECT * FROM active_products 
-WHERE track_inventory = true 
-    AND stock_quantity <= 0
-ORDER BY updated_at DESC;
+CREATE OR REPLACE VIEW active_users AS
+SELECT 
+    id, email, username, first_name, last_name, roles, permissions,
+    status, email_verified, last_login, login_count, created_at, updated_at
+FROM framework_users 
+WHERE status = 'active' AND deleted_at IS NULL;
 
 -- Grant permissions on views
 GRANT SELECT ON active_products TO api_user;
 GRANT SELECT ON featured_products TO api_user;
-GRANT SELECT ON low_stock_products TO api_user;
-GRANT SELECT ON out_of_stock_products TO api_user;
+GRANT SELECT ON active_users TO api_user;
 
 -- Performance and monitoring settings
 ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements';

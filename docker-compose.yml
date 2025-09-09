@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Nginx Load Balancer
+  # Nginx Load Balancer (starts last)
   nginx:
     build: ./nginx
     container_name: api_nginx
@@ -13,8 +13,10 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl:ro
       - ./logs/nginx:/var/log/nginx
     depends_on:
-      - api-node-1
-      - api-node-2
+      api-node-1:
+        condition: service_healthy
+      api-node-2:
+        condition: service_healthy
     networks:
       - api-network
     restart: unless-stopped
@@ -24,7 +26,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Node.js API Instance 1
+  # Node.js API Instance 1 (starts first after infrastructure)
   api-node-1:
     build: 
       context: ./backend
@@ -34,6 +36,8 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - INSTANCE_NAME=node-1
+      
+      # Database Configuration
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_NAME=api_framework
@@ -41,17 +45,32 @@ services:
       - DB_PASSWORD=secure_password_123
       - DB_POOL_MIN=2
       - DB_POOL_MAX=10
+      
+      # Redis Configuration - FIXED
+      - REDIS_HOST=redis-1
+      - REDIS_PORT=6379
       - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379
       - REDIS_PASSWORD=redis_password_123
+      - REDIS_DB=0
       - REDIS_KEY_PREFIX=api_v2
+      
+      # Security Configuration
       - JWT_SECRET=super-secure-jwt-secret-change-in-production-chat3
       - ENCRYPTION_KEY=32-char-encryption-key-change-me!
+      - HASH_ROUNDS=12
+      
+      # Logging Configuration
       - LOG_LEVEL=info
       - LOG_TO_DATABASE=true
       - LOG_TO_CONSOLE=true
+      
+      # Performance & Monitoring
       - ENABLE_METRICS=true
       - DEFAULT_RATE_LIMIT=1000/hour
+      
+      # CORS Configuration
       - ALLOWED_ORIGINS=http://localhost,http://localhost:3000,http://localhost:8080
+      
     volumes:
       - ./logs/node-1:/app/logs
       - ./uploads:/app/uploads
@@ -67,12 +86,12 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
+      interval: 20s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 90s
 
-  # Node.js API Instance 2
+  # Node.js API Instance 2 (starts after instance 1 is healthy)
   api-node-2:
     build: 
       context: ./backend
@@ -82,6 +101,8 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - INSTANCE_NAME=node-2
+      
+      # Database Configuration
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_NAME=api_framework
@@ -89,17 +110,32 @@ services:
       - DB_PASSWORD=secure_password_123
       - DB_POOL_MIN=2
       - DB_POOL_MAX=10
+      
+      # Redis Configuration - FIXED
+      - REDIS_HOST=redis-1
+      - REDIS_PORT=6379
       - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379
       - REDIS_PASSWORD=redis_password_123
+      - REDIS_DB=0
       - REDIS_KEY_PREFIX=api_v2
+      
+      # Security Configuration
       - JWT_SECRET=super-secure-jwt-secret-change-in-production-chat3
       - ENCRYPTION_KEY=32-char-encryption-key-change-me!
+      - HASH_ROUNDS=12
+      
+      # Logging Configuration
       - LOG_LEVEL=info
       - LOG_TO_DATABASE=true
       - LOG_TO_CONSOLE=true
+      
+      # Performance & Monitoring
       - ENABLE_METRICS=true
       - DEFAULT_RATE_LIMIT=1000/hour
+      
+      # CORS Configuration
       - ALLOWED_ORIGINS=http://localhost,http://localhost:3000,http://localhost:8080
+      
     volumes:
       - ./logs/node-2:/app/logs
       - ./uploads:/app/uploads
@@ -110,17 +146,19 @@ services:
         condition: service_healthy
       redis-2:
         condition: service_healthy
+      api-node-1:
+        condition: service_healthy  # Wait for node-1 to be healthy first
     networks:
       - api-network
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
+      interval: 20s
       timeout: 10s
-      retries: 3
+      retries: 5
       start_period: 60s
 
-  # PostgreSQL Database
+  # PostgreSQL Database (starts first)
   postgres:
     image: postgres:15-alpine
     container_name: api_postgres
@@ -141,10 +179,10 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U api_user -d api_framework"]
-      interval: 30s
+      interval: 20s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 60s
     command: >
       postgres 
       -c max_connections=200
@@ -164,7 +202,7 @@ services:
       -c max_parallel_workers=8
       -c max_parallel_maintenance_workers=4
 
-  # Redis Instance 1 (Master)
+  # Redis Instance 1 (Master) - starts early
   redis-1:
     image: redis:7-alpine
     container_name: api_redis_1
@@ -187,12 +225,13 @@ services:
       - api-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "redis_password_123", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
-  # Redis Instance 2 (Slave/Replica)
+  # Redis Instance 2 (Replica) - starts after redis-1
   redis-2:
     image: redis:7-alpine
     container_name: api_redis_2
@@ -214,17 +253,19 @@ services:
     ports:
       - "6380:6379"  # Exposed for development access
     depends_on:
-      - redis-1
+      redis-1:
+        condition: service_healthy
     networks:
       - api-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "redis_password_123", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
 
-  # Monitoring and Management
+  # Database Management UI (starts after postgres is ready)
   adminer:
     image: adminer:latest
     container_name: api_adminer
@@ -233,12 +274,13 @@ services:
     environment:
       - ADMINER_DEFAULT_SERVER=postgres
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - api-network
     restart: unless-stopped
 
-  # Redis Commander (Redis Management UI)
+  # Redis Management UI (starts after Redis is ready)
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: api_redis_commander
@@ -247,8 +289,10 @@ services:
     environment:
       - REDIS_HOSTS=redis-1:redis-1:6379:0:redis_password_123,redis-2:redis-2:6379:0:redis_password_123
     depends_on:
-      - redis-1
-      - redis-2
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
     networks:
       - api-network
     restart: unless-stopped
