@@ -72,11 +72,9 @@ class DatabaseService {
         try {
             // Debug Redis environment
             console.log('[Database] Redis Configuration:');
-            console.log('  REDIS_HOST:', process.env.REDIS_HOST || 'redis-1');
-            console.log('  REDIS_PORT:', process.env.REDIS_PORT || '6379');
             console.log('  REDIS_CLUSTER_NODES:', process.env.REDIS_CLUSTER_NODES || 'not set');
             console.log('  REDIS_PASSWORD:', process.env.REDIS_PASSWORD ? '[SET]' : '[NOT SET]');
-
+    
             // Try cluster first if nodes are configured
             const clusterNodes = process.env.REDIS_CLUSTER_NODES;
             
@@ -86,45 +84,131 @@ class DatabaseService {
                     const [host, port] = node.trim().split(':');
                     return { host, port: parseInt(port) };
                 });
-
+    
                 console.log('[Database] Cluster nodes:', nodes);
-
+    
+                // FIXED: Test network connectivity first
+                console.log('[Database] Testing network connectivity to cluster nodes...');
+                for (const node of nodes) {
+                    try {
+                        const Redis = require('redis');
+                        const testClient = Redis.createClient({
+                            socket: {
+                                host: node.host,
+                                port: node.port,
+                                connectTimeout: 5000
+                            },
+                            password: process.env.REDIS_PASSWORD || undefined
+                        });
+                        
+                        await testClient.connect();
+                        await testClient.ping();
+                        await testClient.quit();
+                        console.log(`[Database] ✅ Network connectivity to ${node.host}:${node.port} confirmed`);
+                    } catch (testError) {
+                        console.error(`[Database] ❌ Cannot reach ${node.host}:${node.port} - ${testError.message}`);
+                        throw new Error(`Network connectivity test failed for ${node.host}:${node.port}`);
+                    }
+                }
+    
                 try {
-                    // FIXED: Use correct Redis cluster configuration
                     const Redis = require('redis');
                     
+                    // Proper cluster configuration for Docker
                     this.redisCluster = Redis.createCluster({
-                        rootNodes: nodes,
+                        rootNodes: nodes.map(node => ({
+                            host: node.host,
+                            port: node.port
+                        })),
                         defaults: {
                             password: process.env.REDIS_PASSWORD || undefined,
                             socket: {
-                                connectTimeout: 10000,
-                                commandTimeout: 5000,
-                                reconnectStrategy: (retries) => Math.min(retries * 50, 1000)
+                                connectTimeout: 20000,
+                                commandTimeout: 15000,
+                                reconnectStrategy: (retries) => {
+                                    console.log(`[Database] Redis cluster reconnect attempt ${retries}`);
+                                    if (retries > 10) return false; // Stop retrying after 10 attempts
+                                    return Math.min(retries * 200, 3000);
+                                }
                             }
                         },
-                        useReplicas: true
+                        // Cluster-specific options
+                        useReplicas: false,
+                        enableAutoPipelining: false,
+                        clusterRetryDelayOnFailover: 100,
+                        clusterRetryDelayOnClusterDown: 300,
+                        clusterMaxRedirections: 3,
+                        enableReadyCheck: true,
+                        maxRetriesPerRequest: 3
                     });
-
-                    // Add error handlers before connecting
+    
+                    // Enhanced error handlers for cluster
                     this.redisCluster.on('error', (err) => {
-                        console.error('[Database] Redis cluster error:', err.message);
+                        if (err.message.includes('ECONNREFUSED')) {
+                            console.error('[Database] ❌ Redis cluster node connection refused');
+                        } else if (err.message.includes('MOVED') || err.message.includes('ASK')) {
+                            console.log('[Database] Redis cluster slot redirect:', err.message);
+                        } else {
+                            console.error('[Database] Redis cluster error:', err.message);
+                        }
                     });
-
+    
                     this.redisCluster.on('connect', () => {
-                        console.log('[Database] Redis cluster connecting...');
+                        console.log('[Database] Redis cluster node connecting...');
                     });
-
+    
                     this.redisCluster.on('ready', () => {
-                        console.log('[Database] Redis cluster ready');
+                        console.log('[Database] ✅ Redis cluster ready');
                     });
-
-                    await this.redisCluster.connect();
-                    console.log(`[Database] ✅ Redis cluster connected (${nodes.length} nodes)`);
-                    return;
+    
+                    this.redisCluster.on('reconnecting', () => {
+                        console.log('[Database] Redis cluster reconnecting...');
+                    });
+    
+                    this.redisCluster.on('end', () => {
+                        console.log('[Database] Redis cluster connection ended');
+                    });
+    
+                    this.redisCluster.on('shardAdded', (shard) => {
+                        console.log('[Database] Redis cluster shard added:', shard.id);
+                    });
+    
+                    this.redisCluster.on('shardRemoved', (shard) => {
+                        console.log('[Database] Redis cluster shard removed:', shard.id);
+                    });
+    
+                    // Connect with extended timeout for cluster initialization
+                    console.log('[Database] Connecting to Redis cluster...');
+                    const clusterConnection = this.redisCluster.connect();
+                    const timeoutPromise = new Promise((_, reject) => {
+                        setTimeout(() => reject(new Error('Cluster connection timeout after 30s')), 30000);
+                    });
+    
+                    await Promise.race([clusterConnection, timeoutPromise]);
+                    
+                    // Test cluster connection with a simple operation
+                    console.log('[Database] Testing cluster connection...');
+                    await this.redisCluster.ping();
+                    
+                    // Test cluster functionality
+                    await this.redisCluster.set('cluster:test', 'working');
+                    const testValue = await this.redisCluster.get('cluster:test');
+                    
+                    if (testValue === 'working') {
+                        await this.redisCluster.del('cluster:test');
+                        console.log(`[Database] ✅ Redis cluster connected and functional (${nodes.length} nodes)`);
+                        return;
+                    } else {
+                        throw new Error('Cluster test failed - could not set/get test value');
+                    }
+                    
                 } catch (clusterError) {
-                    console.warn('[Database] Cluster connection failed:', clusterError.message);
-                    console.log('[Database] Falling back to single Redis instance...');
+                    console.error('[Database] Cluster connection failed:', clusterError.message);
+                    console.log('[Database] Cluster connection details:', {
+                        error: clusterError.name,
+                        message: clusterError.message,
+                        code: clusterError.code
+                    });
                     
                     // Clean up failed cluster
                     if (this.redisCluster) {
@@ -135,60 +219,65 @@ class DatabaseService {
                         }
                         this.redisCluster = null;
                     }
+                    
+                    // Don't fallback to single node if cluster is explicitly configured
+                    throw new Error(`Redis cluster connection failed: ${clusterError.message}`);
                 }
+            } else {
+                // Single node fallback only if no cluster nodes specified
+                console.log('[Database] No cluster nodes specified, using single Redis instance...');
+                
+                const redisHost = process.env.REDIS_HOST || 'redis';
+                const redisPort = parseInt(process.env.REDIS_PORT || '6379');
+                
+                console.log(`[Database] Attempting single Redis connection to ${redisHost}:${redisPort}`);
+    
+                const Redis = require('redis');
+                
+                this.redisClient = Redis.createClient({
+                    socket: {
+                        host: redisHost,
+                        port: redisPort,
+                        connectTimeout: 15000,
+                        commandTimeout: 10000,
+                        reconnectStrategy: (retries) => {
+                            console.log(`[Database] Redis single node reconnect attempt ${retries}`);
+                            return Math.min(retries * 100, 2000);
+                        }
+                    },
+                    password: process.env.REDIS_PASSWORD || undefined,
+                    database: parseInt(process.env.REDIS_DB || '0')
+                });
+    
+                // Event handlers for single node
+                this.redisClient.on('error', (err) => {
+                    if (err.message.includes('ECONNREFUSED')) {
+                        console.error(`[Database] ❌ Redis connection refused at ${redisHost}:${redisPort}`);
+                    } else {
+                        console.error(`[Database] Redis error on ${redisHost}:${redisPort} -`, err.message);
+                    }
+                });
+    
+                this.redisClient.on('connect', () => {
+                    console.log(`[Database] ✅ Redis connecting to ${redisHost}:${redisPort}`);
+                });
+    
+                this.redisClient.on('ready', () => {
+                    console.log(`[Database] ✅ Redis ready at ${redisHost}:${redisPort}`);
+                });
+    
+                await this.redisClient.connect();
+                await this.redisClient.ping();
+                
+                console.log(`[Database] ✅ Successfully connected to Redis at ${redisHost}:${redisPort}`);
             }
-
-            // Fallback to single Redis instance - COMPLETELY REWRITTEN
-            const redisHost = process.env.REDIS_HOST || 'redis-1';
-            const redisPort = parseInt(process.env.REDIS_PORT || '6379');
-            
-            console.log(`[Database] Attempting single Redis connection to ${redisHost}:${redisPort}`);
-
-            // FIXED: Use correct Redis v4+ syntax
-            const Redis = require('redis');
-            
-            this.redisClient = Redis.createClient({
-                socket: {
-                    host: redisHost,
-                    port: redisPort,
-                    connectTimeout: 10000,
-                    commandTimeout: 5000,
-                    reconnectStrategy: (retries) => Math.min(retries * 50, 1000)
-                },
-                password: process.env.REDIS_PASSWORD || undefined,
-                database: parseInt(process.env.REDIS_DB || '0')
-            });
-
-            // Add event handlers before connecting
-            this.redisClient.on('error', (err) => {
-                console.error(`[Database] Redis error on ${redisHost}:${redisPort} -`, err.message);
-            });
-
-            this.redisClient.on('connect', () => {
-                console.log(`[Database] ✅ Redis connecting to ${redisHost}:${redisPort}`);
-            });
-
-            this.redisClient.on('ready', () => {
-                console.log(`[Database] ✅ Redis ready at ${redisHost}:${redisPort}`);
-            });
-
-            this.redisClient.on('reconnecting', () => {
-                console.log(`[Database] Redis reconnecting to ${redisHost}:${redisPort}`);
-            });
-
-            this.redisClient.on('end', () => {
-                console.log(`[Database] Redis connection ended`);
-            });
-
-            // Connect to Redis
-            await this.redisClient.connect();
-            console.log(`[Database] ✅ Successfully connected to Redis at ${redisHost}:${redisPort}`);
-
+    
         } catch (error) {
-            console.warn('[Database] Redis connection failed, continuing without cache:', error.message);
-            console.log('[Database] Full error:', error);
+            console.error('[Database] Redis initialization failed:', error.message);
+            console.log('[Database] Application will continue without Redis caching');
             this.redisClient = null;
             this.redisCluster = null;
+            // Don't throw - let the application continue without cache
         }
     }
     

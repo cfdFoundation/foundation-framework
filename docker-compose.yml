@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Nginx Load Balancer (starts last)
+  # Nginx Load Balancer
   nginx:
     build: ./nginx
     container_name: api_nginx
@@ -26,7 +26,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Node.js API Instance 1 (starts first after infrastructure)
+  # Node.js API Instance 1
   api-node-1:
     build: 
       context: ./backend
@@ -46,10 +46,8 @@ services:
       - DB_POOL_MIN=2
       - DB_POOL_MAX=10
       
-      # Redis Configuration - FIXED
-      - REDIS_HOST=redis-1
-      - REDIS_PORT=6379
-      - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379
+      # Redis Cluster Configuration
+      - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379,redis-3:6379
       - REDIS_PASSWORD=redis_password_123
       - REDIS_DB=0
       - REDIS_KEY_PREFIX=api_v2
@@ -77,10 +75,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis-1:
-        condition: service_healthy
-      redis-2:
-        condition: service_healthy
+      redis-cluster-ready:
+        condition: service_completed_successfully
     networks:
       - api-network
     restart: unless-stopped
@@ -89,9 +85,9 @@ services:
       interval: 20s
       timeout: 10s
       retries: 5
-      start_period: 90s
+      start_period: 120s
 
-  # Node.js API Instance 2 (starts after instance 1 is healthy)
+  # Node.js API Instance 2
   api-node-2:
     build: 
       context: ./backend
@@ -111,10 +107,8 @@ services:
       - DB_POOL_MIN=2
       - DB_POOL_MAX=10
       
-      # Redis Configuration - FIXED
-      - REDIS_HOST=redis-1
-      - REDIS_PORT=6379
-      - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379
+      # Redis Cluster Configuration
+      - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379,redis-3:6379
       - REDIS_PASSWORD=redis_password_123
       - REDIS_DB=0
       - REDIS_KEY_PREFIX=api_v2
@@ -142,12 +136,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis-1:
-        condition: service_healthy
-      redis-2:
-        condition: service_healthy
+      redis-cluster-ready:
+        condition: service_completed_successfully
       api-node-1:
-        condition: service_healthy  # Wait for node-1 to be healthy first
+        condition: service_healthy
     networks:
       - api-network
     restart: unless-stopped
@@ -156,9 +148,9 @@ services:
       interval: 20s
       timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 90s
 
-  # PostgreSQL Database (starts first)
+  # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
     container_name: api_postgres
@@ -173,7 +165,7 @@ services:
       - ./sql/backups:/backups
       - ./logs/postgres:/var/log/postgresql
     ports:
-      - "5432:5432"  # Exposed for development access
+      - "5432:5432"
     networks:
       - api-network
     restart: unless-stopped
@@ -197,75 +189,150 @@ services:
       -c work_mem=4MB
       -c min_wal_size=1GB
       -c max_wal_size=4GB
-      -c max_worker_processes=8
-      -c max_parallel_workers_per_gather=4
-      -c max_parallel_workers=8
-      -c max_parallel_maintenance_workers=4
 
-  # Redis Instance 1 (Master) - starts early
+  # Redis Cluster Node 1
   redis-1:
     image: redis:7-alpine
     container_name: api_redis_1
-    command: >
-      redis-server 
-      --requirepass redis_password_123
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --appendonly yes
-      --appendfsync everysec
-      --save 900 1
-      --save 300 10
-      --save 60 10000
+    ports:
+      - "6379:6379"
+      - "16379:16379"
     volumes:
       - redis_1_data:/data
       - ./logs/redis-1:/var/log/redis
-    ports:
-      - "6379:6379"  # Exposed for development access
+      - ./redis/redis-1.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     networks:
       - api-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "redis_password_123", "ping"]
-      interval: 15s
+      test: ["CMD", "redis-cli", "-a", "redis_password_123", "ping"]
+      interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
-  # Redis Instance 2 (Replica) - starts after redis-1
+  # Redis Cluster Node 2
   redis-2:
     image: redis:7-alpine
     container_name: api_redis_2
-    command: >
-      redis-server 
-      --requirepass redis_password_123
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --appendonly yes
-      --appendfsync everysec
-      --save 900 1
-      --save 300 10
-      --save 60 10000
-      --replicaof redis-1 6379
-      --masterauth redis_password_123
+    ports:
+      - "6380:6379"
+      - "16380:16379"
     volumes:
       - redis_2_data:/data
       - ./logs/redis-2:/var/log/redis
-    ports:
-      - "6380:6379"  # Exposed for development access
-    depends_on:
-      redis-1:
-        condition: service_healthy
+      - ./redis/redis-2.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     networks:
       - api-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "redis_password_123", "ping"]
-      interval: 15s
+      test: ["CMD", "redis-cli", "-a", "redis_password_123", "ping"]
+      interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 45s
+      start_period: 30s
 
-  # Database Management UI (starts after postgres is ready)
+  # Redis Cluster Node 3
+  redis-3:
+    image: redis:7-alpine
+    container_name: api_redis_3
+    ports:
+      - "6381:6379"
+      - "16381:16379"
+    volumes:
+      - redis_3_data:/data
+      - ./logs/redis-3:/var/log/redis
+      - ./redis/redis-3.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - api-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_password_123", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Redis Cluster Initialization
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: redis_cluster_init
+    depends_on:
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
+      redis-3:
+        condition: service_healthy
+    networks:
+      - api-network
+    command:
+      - sh
+      - -c
+      - |
+        echo "=== Redis Cluster Setup ==="
+        echo "Waiting for all Redis nodes to be ready..."
+        sleep 10
+        
+        echo "Testing connectivity to all nodes..."
+        redis-cli -h redis-1 -p 6379 -a redis_password_123 ping
+        redis-cli -h redis-2 -p 6379 -a redis_password_123 ping  
+        redis-cli -h redis-3 -p 6379 -a redis_password_123 ping
+        
+        echo "Creating Redis cluster..."
+        redis-cli --cluster create \
+          redis-1:6379 \
+          redis-2:6379 \
+          redis-3:6379 \
+          --cluster-replicas 0 \
+          --cluster-yes \
+          -a redis_password_123
+        
+        echo "Cluster created successfully!"
+        echo "Cluster info:"
+        redis-cli -h redis-1 -p 6379 -a redis_password_123 cluster info
+        echo "Cluster nodes:"
+        redis-cli -h redis-1 -p 6379 -a redis_password_123 cluster nodes
+
+  # Cluster readiness check
+  redis-cluster-ready:
+    image: redis:7-alpine
+    container_name: redis_cluster_ready
+    depends_on:
+      redis-cluster-init:
+        condition: service_completed_successfully
+    networks:
+      - api-network
+    command:
+      - sh
+      - -c
+      - |
+        echo "=== Verifying Redis Cluster ==="
+        echo "Waiting for cluster to stabilize..."
+        sleep 10
+        
+        # Test cluster operations multiple times to ensure stability
+        echo "Testing cluster operations..."
+        for i in 1 2 3 4 5; do
+          echo "Test $i/5..."
+          redis-cli -h redis-1 -p 6379 -a redis_password_123 -c set test:cluster:$i "working"
+          redis-cli -h redis-2 -p 6379 -a redis_password_123 -c get test:cluster:$i
+          redis-cli -h redis-3 -p 6379 -a redis_password_123 -c del test:cluster:$i
+          sleep 1
+        done
+        
+        echo "Testing cluster info..."
+        redis-cli -h redis-1 -p 6379 -a redis_password_123 cluster info | grep cluster_state:ok
+        
+        echo "✅ Redis cluster is ready and stable for connections!"
+        
+        # Keep container running longer for API nodes to connect
+        sleep 10
+
+  # Database Management UI
   adminer:
     image: adminer:latest
     container_name: api_adminer
@@ -280,19 +347,17 @@ services:
       - api-network
     restart: unless-stopped
 
-  # Redis Management UI (starts after Redis is ready)
+  # Redis Management UI
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: api_redis_commander
     ports:
       - "8081:8081"
     environment:
-      - REDIS_HOSTS=redis-1:redis-1:6379:0:redis_password_123,redis-2:redis-2:6379:0:redis_password_123
+      - REDIS_HOSTS=cluster:redis-1:6379:0:redis_password_123,node2:redis-2:6379:0:redis_password_123,node3:redis-3:6379:0:redis_password_123
     depends_on:
-      redis-1:
-        condition: service_healthy
-      redis-2:
-        condition: service_healthy
+      redis-cluster-ready:
+        condition: service_completed_successfully
     networks:
       - api-network
     restart: unless-stopped
@@ -303,6 +368,8 @@ volumes:
   redis_1_data:
     driver: local
   redis_2_data:
+    driver: local
+  redis_3_data:
     driver: local
 
 networks:
