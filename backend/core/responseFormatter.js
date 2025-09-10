@@ -4,15 +4,15 @@ class ResponseFormatter {
         this.defaultErrorStatus = 500;
     }
 
-    sendSuccess(res, data, context) {
+    sendSuccess(res, data, context = {}) {
         const response = this.formatSuccessResponse(data, context);
         const statusCode = this.getSuccessStatusCode(context);
         
         // Add performance metrics
-        const responseTime = Date.now() - context.startTime;
+        const responseTime = context.startTime ? Date.now() - context.startTime : 0;
         response.meta = {
             responseTime: `${responseTime}ms`,
-            instance: context.instanceId
+            instance: context.instanceId || 'unknown'
         };
 
         res.status(statusCode).json(response);
@@ -40,12 +40,12 @@ class ResponseFormatter {
         this.logError(error, req, statusCode);
     }
 
-    formatSuccessResponse(data, context) {
+    formatSuccessResponse(data, context = {}) {
         return {
             success: true,
             data: this.sanitizeData(data),
-            requestId: context.requestId,
-            version: context.version,
+            requestId: context.requestId || 'unknown',
+            version: context.version || 'unknown',
             timestamp: new Date().toISOString()
         };
     }
@@ -79,20 +79,23 @@ class ResponseFormatter {
         return response;
     }
 
-    getSuccessStatusCode(context) {
+    getSuccessStatusCode(context = {}) {
         // Determine status code based on method
-        switch (context.req.method) {
-            case 'POST':
-                return 201; // Created
-            case 'DELETE':
-                return 204; // No Content
-            case 'PUT':
-            case 'PATCH':
-                return 200; // OK
-            case 'GET':
-            default:
-                return 200; // OK
+        if (context.req && context.req.method) {
+            switch (context.req.method) {
+                case 'POST':
+                    return 201; // Created
+                case 'DELETE':
+                    return 204; // No Content
+                case 'PUT':
+                case 'PATCH':
+                    return 200; // OK
+                case 'GET':
+                default:
+                    return 200; // OK
+            }
         }
+        return 200; // Default OK
     }
 
     sanitizeData(data) {
@@ -146,15 +149,21 @@ class ResponseFormatter {
         );
     }
 
-    logResponse(context, statusCode, responseTime) {
+    logResponse(context = {}, statusCode, responseTime) {
         const logLevel = statusCode >= 400 ? 'warn' : 'info';
-        const message = `${context.req.method} /api/${context.version}/${context.module}/${context.method} ${statusCode} ${responseTime}ms`;
+        const method = context.req?.method || 'UNKNOWN';
+        const version = context.version || 'unknown';
+        const module = context.module || 'unknown';
+        const methodName = context.method || 'unknown';
+        const requestId = context.requestId || 'unknown';
         
-        console.log(`[${context.requestId}] ${message}`);
+        const message = `${method} /api/${version}/${module}/${methodName} ${statusCode} ${responseTime}ms`;
+        
+        console.log(`[${requestId}] ${message}`);
         
         // Log slow requests
         if (responseTime > 1000) {
-            console.warn(`[${context.requestId}] SLOW REQUEST: ${message}`);
+            console.warn(`[${requestId}] SLOW REQUEST: ${message}`);
         }
     }
 

@@ -94,6 +94,16 @@ class APIFramework {
 
         // API info endpoint
         this.app.get('/api/info', (req, res) => {
+            const context = {
+                requestId: req.id,
+                instanceId: req.instanceId,
+                startTime: req.startTime,
+                version: 'v1',
+                module: 'system',
+                method: 'info',
+                req: req
+            };
+            
             this.formatter.sendSuccess(res, {
                 framework: 'Foundation API Framework',
                 version: '2.0.0',
@@ -108,7 +118,7 @@ class APIFramework {
                     'Rate limiting',
                     'Performance monitoring'
                 ]
-            });
+            }, context);
         });
 
         // Metrics endpoint (internal)

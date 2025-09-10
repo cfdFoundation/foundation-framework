@@ -1,8 +1,8 @@
-# Nginx Dockerfile for Chat 3 API Framework
+# Nginx Dockerfile with Stream Module for Redis TCP Proxy
 FROM nginx:alpine
 
-# Install additional tools
-RUN apk add --no-cache curl openssl
+# Install additional tools and nginx stream module
+RUN apk add --no-cache curl openssl nginx-mod-stream
 
 # Create necessary directories
 RUN mkdir -p /etc/nginx/ssl /var/log/nginx /usr/share/nginx/html
@@ -60,12 +60,12 @@ RUN openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 # Set permissions
 RUN chown -R nginx:nginx /var/log/nginx /etc/nginx/ssl
 
-# Health check
+# Health check (changed to not depend on API endpoints)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost/health || exit 1
+    CMD nginx -t || exit 1
 
 # Expose ports
-EXPOSE 80 443
+EXPOSE 80 443 6379
 
 # Start nginx
 CMD ["nginx", "-g", "daemon off;"]
